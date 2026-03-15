@@ -313,6 +313,36 @@ export const McpToolCallItemSchema = z
   })
   .passthrough();
 
+export const DynamicToolCallStatusSchema = z.enum(["inProgress", "completed", "failed"]);
+
+export const DynamicToolCallOutputContentItemSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("inputText"),
+      text: z.string()
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal("inputImage"),
+      imageUrl: z.string()
+    })
+    .passthrough()
+]);
+
+export const DynamicToolCallItemSchema = z
+  .object({
+    type: z.literal("dynamicToolCall"),
+    id: NonEmptyStringSchema,
+    tool: z.string(),
+    arguments: JsonValueSchema,
+    status: DynamicToolCallStatusSchema,
+    contentItems: z.union([z.array(DynamicToolCallOutputContentItemSchema), z.null()]),
+    success: z.union([z.boolean(), z.null()]),
+    durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
+  })
+  .passthrough();
+
 export const CollabAgentToolSchema = z.enum([
   "spawnAgent",
   "sendInput",
@@ -391,6 +421,7 @@ export const TurnItemSchema = z.discriminatedUnion("type", [
   ContextCompactionItemSchema,
   WebSearchItemSchema,
   McpToolCallItemSchema,
+  DynamicToolCallItemSchema,
   CollabAgentToolCallItemSchema,
   ImageViewItemSchema,
   EnteredReviewModeItemSchema,

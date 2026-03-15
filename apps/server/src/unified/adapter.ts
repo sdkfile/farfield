@@ -1111,6 +1111,20 @@ function mapTurnItem(
           : {}),
       };
 
+    case "dynamicToolCall":
+      return {
+        id: item.id,
+        type: "dynamicToolCall",
+        tool: item.tool,
+        arguments: jsonValueFromString(JSON.stringify(item.arguments)),
+        status: item.status,
+        contentItems: item.contentItems,
+        success: item.success,
+        ...(item.durationMs !== undefined
+          ? { durationMs: item.durationMs }
+          : {}),
+      };
+
     case "collabAgentToolCall":
       return {
         id: item.id,

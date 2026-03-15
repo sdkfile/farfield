@@ -24,6 +24,7 @@ export function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const previousHeightRef = useRef(0);
+  const sendInFlightRef = useRef(false);
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -80,13 +81,18 @@ export function ChatComposer({
       await onInterrupt();
       return;
     }
-    if (!draft.trim() || !canSend || isBusy) {
+    if (!draft.trim() || !canSend || isBusy || sendInFlightRef.current) {
       return;
     }
 
-    await onSend(draft);
-    setDraft("");
-    previousHeightRef.current = 0;
+    sendInFlightRef.current = true;
+    try {
+      await onSend(draft);
+      setDraft("");
+      previousHeightRef.current = 0;
+    } finally {
+      sendInFlightRef.current = false;
+    }
   }, [canSend, draft, isBusy, isGenerating, onInterrupt, onSend]);
 
   const disableSend = isGenerating

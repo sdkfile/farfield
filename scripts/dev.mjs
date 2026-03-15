@@ -10,7 +10,7 @@ function printHelp() {
       "Usage: bun run dev -- [--remote] [--agents=<ids>]",
       "",
       "Flags:",
-      "  --remote                      Bind server and web to 0.0.0.0",
+      "  --remote                      Bind web to 0.0.0.0 and server to 127.0.0.1",
       "  --agents=<ids>                Comma-separated list: codex, opencode, all",
       "  --help                        Show this help message"
     ].join("\n")

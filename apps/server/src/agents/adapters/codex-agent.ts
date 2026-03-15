@@ -72,6 +72,14 @@ export interface CodexAgentOptions {
 
 const ANSI_ESCAPE_REGEX = /\u001B\[[0-?]*[ -/]*[@-~]/g;
 
+interface CodexRuntimeStateTransitionLog {
+  appReady: boolean;
+  ipcConnected: boolean;
+  ipcInitialized: boolean;
+  codexAvailable: boolean;
+  lastError: string | null;
+}
+
 export class CodexAgentAdapter implements AgentAdapter {
   public readonly id = "codex";
   public readonly label = "Codex";
@@ -139,6 +147,13 @@ export class CodexAgentAdapter implements AgentAdapter {
     this.service = new CodexMonitorService(this.ipcClient);
 
     this.ipcClient.onConnectionState((state) => {
+      logger.info(
+        {
+          connected: state.connected,
+          ...(state.reason ? { reason: state.reason } : {}),
+        },
+        "codex-ipc-connection-state",
+      );
       this.patchRuntimeState({
         ipcConnected: state.connected,
         ipcInitialized: state.connected
@@ -287,7 +302,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<AgentListThreadsResult> {
     this.ensureCodexAvailable();
 
-    const result = await this.runAppServerCall(() =>
+    const result = await this.runAppServerCall("thread/list", () =>
       input.all
         ? this.appClient.listThreadsAll(
             input.cursor
@@ -376,7 +391,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       throw new Error("Codex thread creation requires cwd");
     }
 
-    const result = await this.runAppServerCall(() =>
+    const result = await this.runAppServerCall("thread/start", () =>
       this.appClient.startThread({
         cwd,
         ...(input.model ? { model: input.model } : {}),
@@ -408,7 +423,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<AgentReadThreadResult> {
     this.ensureCodexAvailable();
     const readThreadWithOption = async (includeTurns: boolean) => {
-      return this.runAppServerCall(() =>
+      return this.runAppServerCall("thread/read", () =>
         this.appClient.readThread(input.threadId, includeTurns),
       );
     };
@@ -546,7 +561,11 @@ export class CodexAgentAdapter implements AgentAdapter {
         attachments: [],
       });
     };
-    await this.runThreadOperationWithResumeRetry(input.threadId, sendTurn);
+    await this.runThreadOperationWithResumeRetry(
+      input.threadId,
+      input.isSteering === true ? "turn/steer" : "turn/start",
+      sendTurn,
+    );
   }
 
   public async interrupt(input: AgentInterruptInput): Promise<void> {
@@ -559,24 +578,34 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
       await this.appClient.interruptTurn(input.threadId, activeTurnId);
     };
-    await this.runThreadOperationWithResumeRetry(input.threadId, interruptTurn);
+    await this.runThreadOperationWithResumeRetry(
+      input.threadId,
+      "turn/interrupt",
+      interruptTurn,
+    );
   }
 
   public async listModels(limit: number) {
     this.ensureCodexAvailable();
-    return this.runAppServerCall(() => this.appClient.listModels(limit));
+    return this.runAppServerCall("models/list", () =>
+      this.appClient.listModels(limit),
+    );
   }
 
   public async listCollaborationModes() {
     this.ensureCodexAvailable();
-    return this.runAppServerCall(() => this.appClient.listCollaborationModes());
+    return this.runAppServerCall("collaborationMode/list", () =>
+      this.appClient.listCollaborationModes(),
+    );
   }
 
   public async readRateLimits(): Promise<
     import("@farfield/protocol").AppServerGetAccountRateLimitsResponse
   > {
     this.ensureCodexAvailable();
-    return this.runAppServerCall(() => this.appClient.readAccountRateLimits());
+    return this.runAppServerCall("account/rateLimits/read", () =>
+      this.appClient.readAccountRateLimits(),
+    );
   }
 
   public async setCollaborationMode(
@@ -624,6 +653,7 @@ export class CodexAgentAdapter implements AgentAdapter {
 
     const threadForRouting = await this.runThreadOperationWithResumeRetry(
       input.threadId,
+      "thread/read (routing)",
       () => this.appClient.readThread(input.threadId, false),
     );
     const parsedRoutingThread = parseThreadConversationState(threadForRouting.thread);
@@ -633,12 +663,13 @@ export class CodexAgentAdapter implements AgentAdapter {
     );
 
     if (routingPendingRequest) {
-      await this.runAppServerCall(() =>
+      await this.runAppServerCall("userInput/submit", () =>
         this.appClient.submitUserInput(input.requestId, parsedResponse),
       );
 
       const refreshedThread = await this.runThreadOperationWithResumeRetry(
         input.threadId,
+        "thread/read (refresh)",
         () => this.appClient.readThread(input.threadId, true),
       );
       const parsedThread = parseThreadConversationState(refreshedThread.thread);
@@ -933,6 +964,18 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
   }
 
+  private createRuntimeStateLog(
+    state: CodexAgentRuntimeState,
+  ): CodexRuntimeStateTransitionLog {
+    return {
+      appReady: state.appReady,
+      ipcConnected: state.ipcConnected,
+      ipcInitialized: state.ipcInitialized,
+      codexAvailable: state.codexAvailable,
+      lastError: state.lastError,
+    };
+  }
+
   private setRuntimeState(next: CodexAgentRuntimeState): void {
     const isSameState =
       this.runtimeState.appReady === next.appReady &&
@@ -944,6 +987,14 @@ export class CodexAgentAdapter implements AgentAdapter {
     if (isSameState) {
       return;
     }
+
+    logger.info(
+      {
+        previous: this.createRuntimeStateLog(this.runtimeState),
+        next: this.createRuntimeStateLog(next),
+      },
+      "codex-runtime-state-changed",
+    );
 
     this.runtimeState = next;
     this.notifyStateChanged();
@@ -979,21 +1030,43 @@ export class CodexAgentAdapter implements AgentAdapter {
       return;
     }
 
+    logger.info(
+      {
+        reconnectDelayMs: this.reconnectDelayMs,
+      },
+      "codex-ipc-reconnect-scheduled",
+    );
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.bootstrapConnections();
     }, this.reconnectDelayMs);
   }
 
-  private async runAppServerCall<T>(operation: () => Promise<T>): Promise<T> {
+  private async runAppServerCall<T>(
+    operationName: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     try {
+      logger.info({ operation: operationName }, "codex-app-server-call-start");
       const result = await operation();
       this.patchRuntimeState({
         appReady: true,
         lastError: null,
       });
+      logger.info(
+        { operation: operationName },
+        "codex-app-server-call-succeeded",
+      );
       return result;
     } catch (error) {
+      logger.warn(
+        {
+          operation: operationName,
+          error: toErrorMessage(error),
+        },
+        "codex-app-server-call-failed",
+      );
       this.patchRuntimeState({
         appReady: !(error instanceof AppServerTransportError),
         lastError: toErrorMessage(error),
@@ -1007,11 +1080,19 @@ export class CodexAgentAdapter implements AgentAdapter {
       return this.bootstrapInFlight;
     }
 
+    logger.info(
+      {
+        state: this.createRuntimeStateLog(this.runtimeState),
+      },
+      "codex-bootstrap-started",
+    );
+
     this.bootstrapInFlight = (async () => {
       try {
-        await this.runAppServerCall(() =>
+        await this.runAppServerCall("thread/list (bootstrap)", () =>
           this.appClient.listThreads({ limit: 1, archived: false }),
         );
+        logger.info("codex-bootstrap-app-server-ready");
       } catch (error) {
         const message = toErrorMessage(error);
         const isSpawnError =
@@ -1031,23 +1112,39 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
 
       if (!this.runtimeState.codexAvailable) {
+        logger.warn(
+          {
+            state: this.createRuntimeStateLog(this.runtimeState),
+          },
+          "codex-bootstrap-aborted",
+        );
         this.bootstrapInFlight = null;
         return;
       }
 
       try {
         if (!this.ipcClient.isConnected()) {
+          logger.info("codex-ipc-connect-started");
           await this.ipcClient.connect();
         }
         this.patchRuntimeState({
           ipcConnected: true,
         });
+        logger.info("codex-ipc-connect-succeeded");
 
+        logger.info({ label: this.label }, "codex-ipc-initialize-started");
         await this.ipcClient.initialize(this.label);
         this.patchRuntimeState({
           ipcInitialized: true,
         });
+        logger.info("codex-ipc-initialize-succeeded");
       } catch (error) {
+        logger.warn(
+          {
+            error: toErrorMessage(error),
+          },
+          "codex-bootstrap-ipc-failed",
+        );
         this.patchRuntimeState({
           ipcInitialized: false,
           ipcConnected: this.ipcClient.isConnected(),
@@ -1055,6 +1152,12 @@ export class CodexAgentAdapter implements AgentAdapter {
         });
         this.scheduleIpcReconnect();
       } finally {
+        logger.info(
+          {
+            state: this.createRuntimeStateLog(this.runtimeState),
+          },
+          "codex-bootstrap-finished",
+        );
         this.bootstrapInFlight = null;
       }
     })();
@@ -1063,7 +1166,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   }
 
   private async getActiveTurnId(threadId: string): Promise<string | null> {
-    const readResult = await this.runAppServerCall(() =>
+    const readResult = await this.runAppServerCall("thread/read (activeTurn)", () =>
       this.appClient.readThread(threadId, true),
     );
     const turns = readResult.thread.turns;
@@ -1098,7 +1201,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   }
 
   private async resumeThread(threadId: string): Promise<void> {
-    await this.runAppServerCall(() =>
+    await this.runAppServerCall("thread/resume", () =>
       this.appClient.resumeThread(threadId, {
         persistExtendedHistory: true,
       }),
@@ -1109,7 +1212,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     let cursor: string | null = null;
 
     while (true) {
-      const response = await this.runAppServerCall(() =>
+      const response = await this.runAppServerCall("thread/listLoaded", () =>
         this.appClient.listLoadedThreads({
           limit: 200,
           ...(cursor ? { cursor } : {}),
@@ -1137,12 +1240,13 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private async runThreadOperationWithResumeRetry<T>(
     threadId: string,
+    operationName: string,
     operation: () => Promise<T>,
   ): Promise<T> {
     await this.ensureThreadLoaded(threadId);
 
     try {
-      return await this.runAppServerCall(operation);
+      return await this.runAppServerCall(operationName, operation);
     } catch (error) {
       const typedError = error instanceof Error ? error : null;
       if (!isInvalidRequestAppServerRpcError(typedError)) {
@@ -1156,7 +1260,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
 
     await this.resumeThread(threadId);
-    return this.runAppServerCall(operation);
+    return this.runAppServerCall(operationName, operation);
   }
 
   private async resolvePendingIpcRequest(

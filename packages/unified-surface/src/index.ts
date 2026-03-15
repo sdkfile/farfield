@@ -689,6 +689,34 @@ const UnifiedMcpToolCallItemSchema = z
   })
   .strict();
 
+const UnifiedDynamicToolCallOutputContentItemSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("inputText"),
+      text: z.string()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("inputImage"),
+      imageUrl: z.string()
+    })
+    .strict()
+]);
+
+const UnifiedDynamicToolCallItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("dynamicToolCall"),
+    tool: z.string(),
+    arguments: JsonValueSchema,
+    status: z.enum(["inProgress", "completed", "failed"]),
+    contentItems: z.union([z.array(UnifiedDynamicToolCallOutputContentItemSchema), z.null()]),
+    success: z.union([z.boolean(), z.null()]),
+    durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
+  })
+  .strict();
+
 const UnifiedCollabAgentToolCallItemSchema = z
   .object({
     id: NonEmptyStringSchema,
@@ -774,6 +802,7 @@ export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedContextCompactionItemSchema,
   UnifiedWebSearchItemSchema,
   UnifiedMcpToolCallItemSchema,
+  UnifiedDynamicToolCallItemSchema,
   UnifiedCollabAgentToolCallItemSchema,
   UnifiedImageViewItemSchema,
   UnifiedEnteredReviewModeItemSchema,
@@ -801,6 +830,7 @@ export const UNIFIED_ITEM_KINDS = [
   "contextCompaction",
   "webSearch",
   "mcpToolCall",
+  "dynamicToolCall",
   "collabAgentToolCall",
   "imageView",
   "enteredReviewMode",
@@ -1298,6 +1328,7 @@ const ITEM_KIND_COVERAGE: Record<UnifiedItemKind, true> = {
   contextCompaction: true,
   webSearch: true,
   mcpToolCall: true,
+  dynamicToolCall: true,
   collabAgentToolCall: true,
   imageView: true,
   enteredReviewMode: true,
