@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:remote": "vite --host 0.0.0.0 --port 4312",
+    "prebuild": "bun run --cwd ../.. prepare:workspace-dist",
     "build": "vite build",
     "build:no-compiler": "REACT_COMPILER=0 vite build",
     "build:profiling": "REACT_PROFILING=1 vite build",
