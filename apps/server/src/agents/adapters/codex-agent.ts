@@ -196,7 +196,11 @@ export class CodexAgentAdapter implements AgentAdapter {
         threadId,
       });
 
-      if (frame.type === "broadcast" && threadId) {
+      if (
+        frame.type === "broadcast" &&
+        frame.method === "thread-stream-state-changed" &&
+        threadId
+      ) {
         const current = this.streamEventsByThreadId.get(threadId) ?? [];
         current.push(frame);
         if (current.length > 400) {

@@ -106,6 +106,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { z } from "zod";
 
 /* ── Types ─────────────────────────────────────────────────── */
@@ -139,6 +140,14 @@ interface RefreshFlags {
   refreshHistory: boolean;
   refreshSelectedThread: boolean;
 }
+
+const COMPLETION_NOTIFICATION_MODE_VALUES = ["off", "selected", "all"] as const;
+type CompletionNotificationMode =
+  (typeof COMPLETION_NOTIFICATION_MODE_VALUES)[number];
+type BrowserNotificationPermission = NotificationPermission | "unsupported";
+
+const COMPLETION_NOTIFICATION_MODE_STORAGE_KEY =
+  "farfield-completion-notification-mode";
 
 const TokenUsageSnakeCaseSchema = z
   .object({
@@ -216,6 +225,8 @@ interface MobileSidebarSwipeGesture {
   startX: number;
   startY: number;
 }
+
+type ComposerDraftMap = Record<string, string>;
 
 /* ── Helpers ────────────────────────────────────────────────── */
 function formatCompactRelativeTime(
@@ -364,6 +375,87 @@ function buildThreadSignature(thread: Thread): string {
 
 function buildThreadsSignature(threads: Thread[]): string[] {
   return threads.map(buildThreadSignature);
+}
+
+function parseCompletionNotificationMode(
+  value: string | null,
+): CompletionNotificationMode {
+  return COMPLETION_NOTIFICATION_MODE_VALUES.find((entry) => entry === value) ?? "selected";
+}
+
+function readCompletionNotificationMode(): CompletionNotificationMode {
+  if (typeof window === "undefined") {
+    return "selected";
+  }
+
+  return parseCompletionNotificationMode(
+    window.localStorage.getItem(COMPLETION_NOTIFICATION_MODE_STORAGE_KEY),
+  );
+}
+
+function writeCompletionNotificationMode(
+  mode: CompletionNotificationMode,
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(COMPLETION_NOTIFICATION_MODE_STORAGE_KEY, mode);
+}
+
+function getNotificationApi():
+  | {
+      permission: NotificationPermission;
+      requestPermission(): Promise<NotificationPermission>;
+    }
+  | null {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return null;
+  }
+  return window.Notification;
+}
+
+function readBrowserNotificationPermission(): BrowserNotificationPermission {
+  return getNotificationApi()?.permission ?? "unsupported";
+}
+
+async function requestNotificationPermissionIfNeeded(
+  enabled: boolean,
+): Promise<BrowserNotificationPermission> {
+  if (!enabled) {
+    return readBrowserNotificationPermission();
+  }
+
+  const notificationApi = getNotificationApi();
+  if (!notificationApi) {
+    return "unsupported";
+  }
+  if (notificationApi.permission !== "default") {
+    return notificationApi.permission;
+  }
+
+  try {
+    return await notificationApi.requestPermission();
+  } catch {
+    return notificationApi.permission;
+  }
+}
+
+function notifyThreadCompleted(thread: Thread): void {
+  if (typeof document !== "undefined" && document.visibilityState === "visible") {
+    return;
+  }
+
+  const notificationApi = getNotificationApi();
+  if (!notificationApi || notificationApi.permission !== "granted") {
+    return;
+  }
+
+  const title = thread.title?.trim() || thread.preview.trim() || "Untitled thread";
+  new Notification("Farfield task completed", {
+    body: title,
+    tag: `thread-complete:${thread.id}`,
+  });
 }
 
 function buildOptimisticThreadSummary(
@@ -560,7 +652,7 @@ const ASSUMED_APP_DEFAULT_EFFORT = "medium";
 const AGENT_CACHE_TTL_MS = 30_000;
 const PROVIDER_CATALOG_CACHE_TTL_MS = 20_000;
 const CORE_REFRESH_INTERVAL_MS = 5_000;
-const SELECTED_THREAD_REFRESH_INTERVAL_MS = 1_000;
+const SELECTED_THREAD_REFRESH_INTERVAL_MS = 2_500;
 const DEBUG_UI_ENABLED = import.meta.env.MODE !== "production";
 const MOBILE_SIDEBAR_WIDTH_PX = 256;
 const MOBILE_SWIPE_EDGE_PX = 24;
@@ -1092,6 +1184,7 @@ export function App(): React.JSX.Element {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(
     initialSnapshot?.selectedThreadId ?? initialUiState.threadId,
   );
+  const [composerDrafts, setComposerDrafts] = useState<ComposerDraftMap>({});
   const [liveState, setLiveState] = useState<LiveStateResponse | null>(
     initialSnapshot?.liveState ?? null,
   );
@@ -1139,6 +1232,10 @@ export function App(): React.JSX.Element {
     initialHasSavedServerBaseUrl,
   );
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [completionNotificationMode, setCompletionNotificationMode] =
+    useState<CompletionNotificationMode>(() => readCompletionNotificationMode());
+  const [notificationPermission, setNotificationPermission] =
+    useState<BrowserNotificationPermission>(() => readBrowserNotificationPermission());
 
   /* UI state */
   const [activeTab, setActiveTab] = useState<"chat" | "debug">(
@@ -1176,6 +1273,11 @@ export function App(): React.JSX.Element {
   const activeTabRef = useRef<"chat" | "debug">(
     initialTab,
   );
+  const loadCoreInFlightRef = useRef<Promise<void> | null>(null);
+  const loadSelectedThreadInFlightRef = useRef<{
+    threadId: string;
+    promise: Promise<void>;
+  } | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const pendingRefreshFlagsRef = useRef<RefreshFlags>({
     refreshCore: false,
@@ -1228,6 +1330,8 @@ export function App(): React.JSX.Element {
     () => threads.find((t) => t.id === selectedThreadId) ?? null,
     [threads, selectedThreadId],
   );
+  const composerDraftKey = selectedThreadId ?? `new:${selectedAgentId}`;
+  const composerDraft = composerDrafts[composerDraftKey] ?? "";
   const agentsById = useMemo(() => {
     const map: Partial<Record<AgentId, AgentDescriptor>> = {};
     for (const descriptor of agentDescriptors) {
@@ -1255,6 +1359,7 @@ export function App(): React.JSX.Element {
   const reversedHistory = useMemo(() => history.slice().reverse(), [history]);
   const hasServerBaseUrlDraftChanges =
     serverBaseUrlDraft.trim() !== serverBaseUrl;
+  const previousThreadsRef = useRef<Thread[]>([]);
   const unifiedEventsUrl = useMemo(
     () => getUnifiedEventsUrl(serverBaseUrl),
     [serverBaseUrl],
@@ -1285,6 +1390,36 @@ export function App(): React.JSX.Element {
       return nextThreads;
     });
   }, []);
+
+  useEffect(() => {
+    void requestNotificationPermissionIfNeeded(
+      completionNotificationMode !== "off",
+    ).then((permission) => {
+      setNotificationPermission(permission);
+    });
+  }, [completionNotificationMode]);
+
+  useEffect(() => {
+    const previousById = new Map(
+      previousThreadsRef.current.map((thread) => [thread.id, thread]),
+    );
+
+    for (const thread of threads) {
+      const previous = previousById.get(thread.id);
+      const wasGenerating = previous?.isGenerating ?? false;
+      const isGeneratingNow = thread.isGenerating ?? false;
+      const shouldNotify =
+        completionNotificationMode === "all" ||
+        (completionNotificationMode === "selected" &&
+          thread.id === selectedThreadIdRef.current);
+
+      if (shouldNotify && wasGenerating && !isGeneratingNow) {
+        notifyThreadCompleted(thread);
+      }
+    }
+
+    previousThreadsRef.current = threads;
+  }, [completionNotificationMode, threads]);
   const groupedThreads = useMemo(() => {
     type Group = {
       key: string;
@@ -1753,159 +1888,164 @@ export function App(): React.JSX.Element {
     : !openCodeConnected;
   /* Data loading */
   const loadCoreData = useCallback(async () => {
-    const shouldLoadDebugData = activeTabRef.current === "debug";
-    const now = Date.now();
-    const cachedAgents = agentCacheRef.current;
-    const shouldLoadAgents =
-      !cachedAgents || now - cachedAgents.fetchedAt >= AGENT_CACHE_TTL_MS;
-    const agentsPromise: Promise<AgentsResponse> =
-      shouldLoadAgents || !cachedAgents
-      ? listAgents().then((agents) => {
-          agentCacheRef.current = {
-            value: agents,
-            fetchedAt: Date.now(),
-          };
-          return agents;
-        })
-      : Promise.resolve(cachedAgents.value);
+    if (loadCoreInFlightRef.current) {
+      return loadCoreInFlightRef.current;
+    }
 
-    const healthPromise = getHealth();
-    const rateLimitsPromise = getAccountRateLimits().catch(() => null);
-    const sidebarPromise = listSidebarThreads({
-      limit: 80,
-      archived: false,
-      all: false,
-      maxPages: 1,
-    });
-    const tracePromise = shouldLoadDebugData
-      ? getTraceStatus()
-      : Promise.resolve<TraceStatus | null>(null);
-    const historyPromise = shouldLoadDebugData
-      ? listDebugHistory(120)
-      : Promise.resolve<HistoryResponse | null>(null);
+    const promise = (async () => {
+      const shouldLoadDebugData = activeTabRef.current === "debug";
+      const now = Date.now();
+      const cachedAgents = agentCacheRef.current;
+      const shouldLoadAgents =
+        !cachedAgents || now - cachedAgents.fetchedAt >= AGENT_CACHE_TTL_MS;
+      const agentsPromise: Promise<AgentsResponse> =
+        shouldLoadAgents || !cachedAgents
+        ? listAgents().then((agents) => {
+            agentCacheRef.current = {
+              value: agents,
+              fetchedAt: Date.now(),
+            };
+            return agents;
+          })
+        : Promise.resolve(cachedAgents.value);
 
-    const nt = await sidebarPromise;
-    const incomingThreads = sortThreadsByRecency(nt.rows);
-    const optimisticSelectedThreadIds = optimisticSelectedThreadIdsRef.current;
-    if (optimisticSelectedThreadIds.size > 0) {
+      const healthPromise = getHealth();
+      const rateLimitsPromise = getAccountRateLimits().catch(() => null);
+      const sidebarPromise = listSidebarThreads({
+        limit: 80,
+        archived: false,
+        all: false,
+        maxPages: 1,
+      });
+      const tracePromise = shouldLoadDebugData
+        ? getTraceStatus()
+        : Promise.resolve<TraceStatus | null>(null);
+      const historyPromise = shouldLoadDebugData
+        ? listDebugHistory(120)
+        : Promise.resolve<HistoryResponse | null>(null);
+
+      const nt = await sidebarPromise;
+      const incomingThreads = sortThreadsByRecency(nt.rows);
+      const optimisticSelectedThreadIds = optimisticSelectedThreadIdsRef.current;
+      if (optimisticSelectedThreadIds.size > 0) {
+        for (const thread of incomingThreads) {
+          optimisticSelectedThreadIds.delete(thread.id);
+        }
+      }
+      const nextThreadProviders = new Map(threadProviderByIdRef.current);
       for (const thread of incomingThreads) {
-        optimisticSelectedThreadIds.delete(thread.id);
+        nextThreadProviders.set(thread.id, thread.provider);
       }
-    }
-    const nextThreadProviders = new Map(threadProviderByIdRef.current);
-    for (const thread of incomingThreads) {
-      nextThreadProviders.set(thread.id, thread.provider);
-    }
-    threadProviderByIdRef.current = nextThreadProviders;
-    setThreadListErrors((prev) =>
-      hasSameThreadListErrors(prev, nt.errors) ? prev : nt.errors,
-    );
-    setThreads((previousThreads) => {
-      const nextThreads = mergeIncomingThreads(
-        incomingThreads,
-        previousThreads,
+      threadProviderByIdRef.current = nextThreadProviders;
+      setThreadListErrors((prev) =>
+        hasSameThreadListErrors(prev, nt.errors) ? prev : nt.errors,
       );
-      const existingIds = new Set(nextThreads.map((thread) => thread.id));
-      for (const thread of previousThreads) {
-        if (existingIds.has(thread.id)) {
-          continue;
+      setThreads((previousThreads) => {
+        const nextThreads = mergeIncomingThreads(
+          incomingThreads,
+          previousThreads,
+        );
+        const existingIds = new Set(nextThreads.map((thread) => thread.id));
+        for (const thread of previousThreads) {
+          if (existingIds.has(thread.id)) {
+            continue;
+          }
+          const shouldKeepThread =
+            optimisticSelectedThreadIdsRef.current.has(thread.id) ||
+            thread.id === selectedThreadIdRef.current;
+          if (!shouldKeepThread) {
+            continue;
+          }
+          existingIds.add(thread.id);
+          nextThreads.push(thread);
         }
-        const shouldKeepThread =
-          optimisticSelectedThreadIdsRef.current.has(thread.id) ||
-          thread.id === selectedThreadIdRef.current;
-        if (!shouldKeepThread) {
-          continue;
+        const sortedThreads = sortThreadsByRecency(nextThreads);
+        const nextThreadsSignature = buildThreadsSignature(sortedThreads);
+        if (signaturesMatch(threadsSignatureRef.current, nextThreadsSignature)) {
+          return previousThreads;
         }
-        existingIds.add(thread.id);
-        nextThreads.push(thread);
+        threadsSignatureRef.current = nextThreadsSignature;
+        return sortedThreads;
+      });
+
+      const [healthResult, agentsResult, traceResult, historyResult, rateLimitsResult] =
+        await Promise.allSettled([
+          healthPromise,
+          agentsPromise,
+          tracePromise,
+          historyPromise,
+          rateLimitsPromise,
+        ]);
+
+      if (healthResult.status === "rejected") {
+        console.error("Failed to load health state", healthResult.reason);
       }
-      const sortedThreads = sortThreadsByRecency(nextThreads);
-      const nextThreadsSignature = buildThreadsSignature(sortedThreads);
-      if (signaturesMatch(threadsSignatureRef.current, nextThreadsSignature)) {
-        return previousThreads;
+      if (agentsResult.status === "rejected") {
+        console.error("Failed to load agent descriptors", agentsResult.reason);
       }
-      threadsSignatureRef.current = nextThreadsSignature;
-      return sortedThreads;
-    });
+      if (traceResult.status === "rejected") {
+        console.error("Failed to load trace status", traceResult.reason);
+      }
+      if (historyResult.status === "rejected") {
+        console.error("Failed to load debug history", historyResult.reason);
+      }
+      if (rateLimitsResult.status === "rejected") {
+        console.error("Failed to load account rate limits", rateLimitsResult.reason);
+      }
 
-    const [healthResult, agentsResult, traceResult, historyResult, rateLimitsResult] =
-      await Promise.allSettled([
-        healthPromise,
-        agentsPromise,
-        tracePromise,
-        historyPromise,
-        rateLimitsPromise,
-      ]);
+      const nh = healthResult.status === "fulfilled" ? healthResult.value : null;
+      const nag = agentsResult.status === "fulfilled" ? agentsResult.value : null;
+      const ntr = traceResult.status === "fulfilled" ? traceResult.value : null;
+      const nhist = historyResult.status === "fulfilled" ? historyResult.value : null;
+      const nrl = rateLimitsResult.status === "fulfilled" ? rateLimitsResult.value : null;
 
-    if (healthResult.status === "rejected") {
-      console.error("Failed to load health state", healthResult.reason);
-    }
-    if (agentsResult.status === "rejected") {
-      console.error("Failed to load agent descriptors", agentsResult.reason);
-    }
-    if (traceResult.status === "rejected") {
-      console.error("Failed to load trace status", traceResult.reason);
-    }
-    if (historyResult.status === "rejected") {
-      console.error("Failed to load debug history", historyResult.reason);
-    }
-    if (rateLimitsResult.status === "rejected") {
-      console.error("Failed to load account rate limits", rateLimitsResult.reason);
-    }
+      const nextAgents = nag?.agents ?? agentDescriptors;
+      const nextDefaultAgentId = nag?.defaultAgentId ?? selectedAgentId;
+      const enabledAgents = nextAgents
+        .filter((agent) => agent.enabled)
+        .map((agent) => agent.id);
+      const nextDefaultAgent = enabledAgents.includes(nextDefaultAgentId)
+        ? nextDefaultAgentId
+        : (enabledAgents[0] ?? nextDefaultAgentId);
+      const threadForActiveProvider =
+        incomingThreads.find(
+          (thread) => thread.id === selectedThreadIdRef.current,
+        ) ?? null;
+      const activeProviderId =
+        threadForActiveProvider?.provider ?? selectedAgentId;
+      const activeDescriptor =
+        nextAgents.find((agent) => agent.id === activeProviderId) ?? null;
 
-    const nh = healthResult.status === "fulfilled" ? healthResult.value : null;
-    const nag = agentsResult.status === "fulfilled" ? agentsResult.value : null;
-    const ntr = traceResult.status === "fulfilled" ? traceResult.value : null;
-    const nhist = historyResult.status === "fulfilled" ? historyResult.value : null;
-    const nrl = rateLimitsResult.status === "fulfilled" ? rateLimitsResult.value : null;
+      const canLoadModes = canUseFeature(activeDescriptor, "listCollaborationModes");
+      const canLoadModels = canUseFeature(activeDescriptor, "listModels");
+      const cachedCatalog =
+        providerCatalogCacheRef.current.get(activeProviderId) ?? null;
+      const shouldLoadCatalog =
+        !cachedCatalog ||
+        now - cachedCatalog.fetchedAt >= PROVIDER_CATALOG_CACHE_TTL_MS;
 
-    const nextAgents = nag?.agents ?? agentDescriptors;
-    const nextDefaultAgentId = nag?.defaultAgentId ?? selectedAgentId;
-    const enabledAgents = nextAgents
-      .filter((agent) => agent.enabled)
-      .map((agent) => agent.id);
-    const nextDefaultAgent = enabledAgents.includes(nextDefaultAgentId)
-      ? nextDefaultAgentId
-      : (enabledAgents[0] ?? nextDefaultAgentId);
-    const threadForActiveProvider =
-      incomingThreads.find(
-        (thread) => thread.id === selectedThreadIdRef.current,
-      ) ?? null;
-    const activeProviderId =
-      threadForActiveProvider?.provider ?? selectedAgentId;
-    const activeDescriptor =
-      nextAgents.find((agent) => agent.id === activeProviderId) ?? null;
+      let nextModesData: ModesResponse["data"] = [];
+      let nextModelsData: ModelsResponse["data"] = [];
+      const hasCachedCatalog =
+        (canLoadModes || canLoadModels) && !shouldLoadCatalog && cachedCatalog;
+      const shouldFetchCatalog =
+        (canLoadModes || canLoadModels) && !hasCachedCatalog;
 
-    const canLoadModes = canUseFeature(activeDescriptor, "listCollaborationModes");
-    const canLoadModels = canUseFeature(activeDescriptor, "listModels");
-    const cachedCatalog =
-      providerCatalogCacheRef.current.get(activeProviderId) ?? null;
-    const shouldLoadCatalog =
-      !cachedCatalog ||
-      now - cachedCatalog.fetchedAt >= PROVIDER_CATALOG_CACHE_TTL_MS;
+      if (hasCachedCatalog) {
+        nextModesData = canLoadModes ? cachedCatalog.modes : [];
+        nextModelsData = canLoadModels ? cachedCatalog.models : [];
+      }
 
-    let nextModesData: ModesResponse["data"] = [];
-    let nextModelsData: ModelsResponse["data"] = [];
-    const hasCachedCatalog =
-      (canLoadModes || canLoadModels) && !shouldLoadCatalog && cachedCatalog;
-    const shouldFetchCatalog =
-      (canLoadModes || canLoadModels) && !hasCachedCatalog;
+      let preferredAgentId: AgentId | null = null;
+      const nextModesSignature = nextModesData.map((mode) =>
+        [mode.mode, mode.name, mode.reasoningEffort ?? ""].join("|"),
+      );
+      const nextModelsSignature = nextModelsData.map((model) =>
+        [model.id, model.displayName ?? ""].join("|"),
+      );
 
-    if (hasCachedCatalog) {
-      nextModesData = canLoadModes ? cachedCatalog.modes : [];
-      nextModelsData = canLoadModels ? cachedCatalog.models : [];
-    }
-
-    let preferredAgentId: AgentId | null = null;
-    const nextModesSignature = nextModesData.map((mode) =>
-      [mode.mode, mode.name, mode.reasoningEffort ?? ""].join("|"),
-    );
-    const nextModelsSignature = nextModelsData.map((model) =>
-      [model.id, model.displayName ?? ""].join("|"),
-    );
-
-    if (nh) {
-      setHealth((prev) => {
+      if (nh) {
+        setHealth((prev) => {
         if (
           prev &&
           prev.state.appReady === nh.state.appReady &&
@@ -1919,24 +2059,24 @@ export function App(): React.JSX.Element {
           return prev;
         }
         return nh;
-      });
-    }
-    if (
-      hasCachedCatalog &&
-      !signaturesMatch(modesSignatureRef.current, nextModesSignature)
-    ) {
-      modesSignatureRef.current = nextModesSignature;
-      setModes(nextModesData);
-    }
-    if (
-      hasCachedCatalog &&
-      !signaturesMatch(modelsSignatureRef.current, nextModelsSignature)
-    ) {
-      modelsSignatureRef.current = nextModelsSignature;
-      setModels(nextModelsData);
-    }
-    if (ntr) {
-      setTraceStatus((prev) => {
+        });
+      }
+      if (
+        hasCachedCatalog &&
+        !signaturesMatch(modesSignatureRef.current, nextModesSignature)
+      ) {
+        modesSignatureRef.current = nextModesSignature;
+        setModes(nextModesData);
+      }
+      if (
+        hasCachedCatalog &&
+        !signaturesMatch(modelsSignatureRef.current, nextModelsSignature)
+      ) {
+        modelsSignatureRef.current = nextModelsSignature;
+        setModels(nextModelsData);
+      }
+      if (ntr) {
+        setTraceStatus((prev) => {
         if (
           prev &&
           prev.active?.id === ntr.active?.id &&
@@ -1948,10 +2088,10 @@ export function App(): React.JSX.Element {
           return prev;
         }
         return ntr;
-      });
-    }
-    if (nhist) {
-      setHistory((prev) => {
+        });
+      }
+      if (nhist) {
+        setHistory((prev) => {
         if (
           prev.length === nhist.history.length &&
           prev[prev.length - 1]?.id ===
@@ -1960,13 +2100,13 @@ export function App(): React.JSX.Element {
           return prev;
         }
         return nhist.history;
-      });
-    }
-    if (nrl) {
-      setRateLimits(nrl);
-    }
-    if (nag) {
-      setAgentDescriptors((prev) => {
+        });
+      }
+      if (nrl) {
+        setRateLimits(nrl);
+      }
+      if (nag) {
+        setAgentDescriptors((prev) => {
         if (
           prev.length === nag.agents.length &&
           prev.every((agent, index) => {
@@ -1998,17 +2138,17 @@ export function App(): React.JSX.Element {
           return prev;
         }
         return nag.agents;
-      });
-      preferredAgentId = nextDefaultAgent;
-      setSelectedAgentId((cur) => {
+        });
+        preferredAgentId = nextDefaultAgent;
+        setSelectedAgentId((cur) => {
         if (!hasHydratedAgentSelectionRef.current) {
           hasHydratedAgentSelectionRef.current = true;
           return nextDefaultAgent;
         }
         return enabledAgents.includes(cur) ? cur : nextDefaultAgent;
-      });
-    }
-    setSelectedThreadId((cur) => {
+        });
+      }
+      setSelectedThreadId((cur) => {
       if (cur) {
         return cur;
       }
@@ -2039,8 +2179,8 @@ export function App(): React.JSX.Element {
         }
       }
       return incomingThreads[0]?.id ?? null;
-    });
-    setSelectedModeKey((cur) => {
+      });
+      setSelectedModeKey((cur) => {
       if (cur || nextModesData.length === 0) return cur;
       const nonPlanDefault = nextModesData.find(
         (mode) => !isPlanModeOption(mode),
@@ -2048,58 +2188,66 @@ export function App(): React.JSX.Element {
       return nonPlanDefault?.mode ?? nextModesData[0]?.mode ?? "";
     });
 
-    if (!shouldFetchCatalog) {
-      return;
-    }
-
-    try {
-      const [nextModesResult, nextModelsResult] = await Promise.all([
-        canLoadModes
-          ? listCollaborationModes(activeProviderId)
-          : Promise.resolve({ data: [] as ModesResponse["data"] }),
-        canLoadModels
-          ? listModels(activeProviderId)
-          : Promise.resolve({ data: [] as ModelsResponse["data"] }),
-      ]);
-      nextModesData = nextModesResult.data;
-      nextModelsData = nextModelsResult.data;
-      providerCatalogCacheRef.current.set(activeProviderId, {
-        modes: nextModesData,
-        models: nextModelsData,
-        fetchedAt: Date.now(),
-      });
-    } catch (error) {
-      console.error("Failed to load provider model catalog", error);
-      setError(toErrorMessage(error));
-      return;
-    }
-
-    const fetchedModesSignature = nextModesData.map((mode) =>
-      [mode.mode, mode.name, mode.reasoningEffort ?? ""].join("|"),
-    );
-    const fetchedModelsSignature = nextModelsData.map((model) =>
-      [model.id, model.displayName ?? ""].join("|"),
-    );
-
-    startTransition(() => {
-      if (!signaturesMatch(modesSignatureRef.current, fetchedModesSignature)) {
-        modesSignatureRef.current = fetchedModesSignature;
-        setModes(nextModesData);
+      if (!shouldFetchCatalog) {
+        return;
       }
-      if (!signaturesMatch(modelsSignatureRef.current, fetchedModelsSignature)) {
-        modelsSignatureRef.current = fetchedModelsSignature;
-        setModels(nextModelsData);
+
+      try {
+        const [nextModesResult, nextModelsResult] = await Promise.all([
+          canLoadModes
+            ? listCollaborationModes(activeProviderId)
+            : Promise.resolve({ data: [] as ModesResponse["data"] }),
+          canLoadModels
+            ? listModels(activeProviderId)
+            : Promise.resolve({ data: [] as ModelsResponse["data"] }),
+        ]);
+        nextModesData = nextModesResult.data;
+        nextModelsData = nextModelsResult.data;
+        providerCatalogCacheRef.current.set(activeProviderId, {
+          modes: nextModesData,
+          models: nextModelsData,
+          fetchedAt: Date.now(),
+        });
+      } catch (error) {
+        console.error("Failed to load provider model catalog", error);
+        setError(toErrorMessage(error));
+        return;
       }
-      setSelectedModeKey((cur) => {
-        if (cur || nextModesData.length === 0) {
-          return cur;
+
+      const fetchedModesSignature = nextModesData.map((mode) =>
+        [mode.mode, mode.name, mode.reasoningEffort ?? ""].join("|"),
+      );
+      const fetchedModelsSignature = nextModelsData.map((model) =>
+        [model.id, model.displayName ?? ""].join("|"),
+      );
+
+      startTransition(() => {
+        if (!signaturesMatch(modesSignatureRef.current, fetchedModesSignature)) {
+          modesSignatureRef.current = fetchedModesSignature;
+          setModes(nextModesData);
         }
-        const nonPlanDefault = nextModesData.find(
-          (mode) => !isPlanModeOption(mode),
-        );
-        return nonPlanDefault?.mode ?? nextModesData[0]?.mode ?? "";
+        if (!signaturesMatch(modelsSignatureRef.current, fetchedModelsSignature)) {
+          modelsSignatureRef.current = fetchedModelsSignature;
+          setModels(nextModelsData);
+        }
+        setSelectedModeKey((cur) => {
+          if (cur || nextModesData.length === 0) {
+            return cur;
+          }
+          const nonPlanDefault = nextModesData.find(
+            (mode) => !isPlanModeOption(mode),
+          );
+          return nonPlanDefault?.mode ?? nextModesData[0]?.mode ?? "";
+        });
       });
+    })().finally(() => {
+      if (loadCoreInFlightRef.current === promise) {
+        loadCoreInFlightRef.current = null;
+      }
     });
+
+    loadCoreInFlightRef.current = promise;
+    return promise;
   }, [agentDescriptors, selectedAgentId]);
 
   const loadSelectedThread = useCallback(
@@ -2107,174 +2255,192 @@ export function App(): React.JSX.Element {
       threadId: string,
       options?: Partial<LoadSelectedThreadOptions>,
     ) => {
-      const includeTurns = options?.includeTurns ?? true;
-      const includeStreamEvents = options?.includeStreamEvents ?? includeTurns;
-      let threadAgentId = threadProviderByIdRef.current.get(threadId) ?? null;
-      let read =
-        threadAgentId === null
-          ? await readThread(threadId, {
-              includeTurns,
-            })
-          : await readThread(threadId, {
-              includeTurns,
-              provider: threadAgentId,
-            });
-      threadAgentId = read.thread.provider;
-      threadProviderByIdRef.current.set(threadId, threadAgentId);
-
-      const descriptor = agentsById[threadAgentId];
-      const canReadLiveState =
-        descriptor === undefined
-          ? threadAgentId === "codex"
-          : canUseFeature(descriptor, "readLiveState");
-      const canReadStreamEvents =
-        descriptor === undefined
-          ? threadAgentId === "codex"
-          : canUseFeature(descriptor, "readStreamEvents");
-      let shouldReadTurns = includeTurns || !canReadLiveState;
-
-      if (shouldReadTurns && !includeTurns) {
-        read = await readThread(threadId, {
-          includeTurns: true,
-          provider: threadAgentId,
-        });
+      const inFlight = loadSelectedThreadInFlightRef.current;
+      if (inFlight && inFlight.threadId === threadId) {
+        return inFlight.promise;
       }
 
-      const live = canReadLiveState
-        ? await getLiveState(threadId, threadAgentId)
-        : {
-            ok: true as const,
-            threadId,
-            ownerClientId: null,
-            conversationState: null,
-            liveStateError: null,
-          };
+      const promise = (async () => {
+        const includeTurns = options?.includeTurns ?? true;
+        const includeStreamEvents = options?.includeStreamEvents ?? includeTurns;
+        let threadAgentId = threadProviderByIdRef.current.get(threadId) ?? null;
+        let read =
+          threadAgentId === null
+            ? await readThread(threadId, {
+                includeTurns,
+              })
+            : await readThread(threadId, {
+                includeTurns,
+                provider: threadAgentId,
+              });
+        threadAgentId = read.thread.provider;
+        threadProviderByIdRef.current.set(threadId, threadAgentId);
 
-      if (!shouldReadTurns && live.conversationState === null) {
-        read = await readThread(threadId, {
-          includeTurns: true,
-          provider: threadAgentId,
-        });
-        shouldReadTurns = true;
-      }
-      const shouldLoadStreamEvents =
-        canReadStreamEvents &&
-        (activeTabRef.current === "debug" ||
-          (threadAgentId === "codex" && selectedThreadIdRef.current === threadId)) &&
-        (includeStreamEvents || threadAgentId === "codex");
-      const shouldUpdateSelectedThread =
-        selectedThreadIdRef.current === threadId;
-      const existingCachedState =
-        threadViewStateCacheRef.current.get(threadId) ?? null;
-      let nextStreamEvents = existingCachedState?.streamEvents ?? [];
-      startTransition(() => {
-        setThreads((previousThreads) => {
-          const nextIsGenerating = live.conversationState
-            ? isThreadGeneratingState(live.conversationState)
-            : isThreadGeneratingState(read.thread);
-          const nextThreads = previousThreads.map((threadSummary) => {
-            if (threadSummary.id !== read.thread.id) {
-              return threadSummary;
-            }
+        const descriptor = agentsById[threadAgentId];
+        const canReadLiveState =
+          descriptor === undefined
+            ? threadAgentId === "codex"
+            : canUseFeature(descriptor, "readLiveState");
+        const canReadStreamEvents =
+          descriptor === undefined
+            ? threadAgentId === "codex"
+            : canUseFeature(descriptor, "readStreamEvents");
+        let shouldReadTurns = includeTurns || !canReadLiveState;
 
-            const nextUpdatedAt =
-              typeof read.thread.updatedAt === "number"
-                ? Math.max(threadSummary.updatedAt, read.thread.updatedAt)
-                : threadSummary.updatedAt;
-            const nextTitle =
-              read.thread.title !== undefined
-                ? read.thread.title
-                : threadSummary.title;
-            const hadGenerating = threadSummary.isGenerating ?? false;
-
-            if (
-              nextUpdatedAt === threadSummary.updatedAt &&
-              nextTitle === threadSummary.title &&
-              hadGenerating === nextIsGenerating
-            ) {
-              return threadSummary;
-            }
-
-            return {
-              ...threadSummary,
-              updatedAt: nextUpdatedAt,
-              isGenerating: nextIsGenerating,
-              ...(nextTitle !== undefined ? { title: nextTitle } : {}),
-            };
+        if (shouldReadTurns && !includeTurns) {
+          read = await readThread(threadId, {
+            includeTurns: true,
+            provider: threadAgentId,
           });
-
-          const sortedThreads = sortThreadsByRecency(nextThreads);
-          const nextSignature = buildThreadsSignature(sortedThreads);
-          if (signaturesMatch(threadsSignatureRef.current, nextSignature)) {
-            return previousThreads;
-          }
-          threadsSignatureRef.current = nextSignature;
-          return sortedThreads;
-        });
-        if (!shouldUpdateSelectedThread) {
-          return;
         }
-        setLiveState((prev) => {
-          if (
-            buildLiveStateSyncSignature(prev) ===
-            buildLiveStateSyncSignature(live)
-          ) {
-            return prev;
+
+        const live = canReadLiveState
+          ? await getLiveState(threadId, threadAgentId)
+          : {
+              ok: true as const,
+              threadId,
+              ownerClientId: null,
+              conversationState: null,
+              liveStateError: null,
+            };
+
+        if (!shouldReadTurns && live.conversationState === null) {
+          read = await readThread(threadId, {
+            includeTurns: true,
+            provider: threadAgentId,
+          });
+          shouldReadTurns = true;
+        }
+        const shouldLoadStreamEvents =
+          canReadStreamEvents &&
+          (activeTabRef.current === "debug" ||
+            (threadAgentId === "codex" &&
+              selectedThreadIdRef.current === threadId)) &&
+          (includeStreamEvents || threadAgentId === "codex");
+        const shouldUpdateSelectedThread =
+          selectedThreadIdRef.current === threadId;
+        const existingCachedState =
+          threadViewStateCacheRef.current.get(threadId) ?? null;
+        let nextStreamEvents = existingCachedState?.streamEvents ?? [];
+        startTransition(() => {
+          setThreads((previousThreads) => {
+            const nextIsGenerating = live.conversationState
+              ? isThreadGeneratingState(live.conversationState)
+              : isThreadGeneratingState(read.thread);
+            const nextThreads = previousThreads.map((threadSummary) => {
+              if (threadSummary.id !== read.thread.id) {
+                return threadSummary;
+              }
+
+              const nextUpdatedAt =
+                typeof read.thread.updatedAt === "number"
+                  ? Math.max(threadSummary.updatedAt, read.thread.updatedAt)
+                  : threadSummary.updatedAt;
+              const nextTitle =
+                read.thread.title !== undefined
+                  ? read.thread.title
+                  : threadSummary.title;
+              const hadGenerating = threadSummary.isGenerating ?? false;
+
+              if (
+                nextUpdatedAt === threadSummary.updatedAt &&
+                nextTitle === threadSummary.title &&
+                hadGenerating === nextIsGenerating
+              ) {
+                return threadSummary;
+              }
+
+              return {
+                ...threadSummary,
+                updatedAt: nextUpdatedAt,
+                isGenerating: nextIsGenerating,
+                ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+              };
+            });
+
+            const sortedThreads = sortThreadsByRecency(nextThreads);
+            const nextSignature = buildThreadsSignature(sortedThreads);
+            if (signaturesMatch(threadsSignatureRef.current, nextSignature)) {
+              return previousThreads;
+            }
+            threadsSignatureRef.current = nextSignature;
+            return sortedThreads;
+          });
+          if (!shouldUpdateSelectedThread) {
+            return;
           }
-          return live;
-        });
-        if (shouldReadTurns) {
-          setReadThreadState((prev) => {
+          setLiveState((prev) => {
             if (
-              buildReadThreadSyncSignature(prev) ===
-              buildReadThreadSyncSignature(read)
+              buildLiveStateSyncSignature(prev) ===
+              buildLiveStateSyncSignature(live)
             ) {
               return prev;
             }
-            return read;
+            return live;
           });
+          if (shouldReadTurns) {
+            setReadThreadState((prev) => {
+              if (
+                buildReadThreadSyncSignature(prev) ===
+                buildReadThreadSyncSignature(read)
+              ) {
+                return prev;
+              }
+              return read;
+            });
+          }
+        });
+
+        threadViewStateCacheRef.current.set(threadId, {
+          readThreadState: shouldReadTurns
+            ? read
+            : (existingCachedState?.readThreadState ?? null),
+          liveState: live,
+          streamEvents: nextStreamEvents,
+        });
+
+        if (!shouldLoadStreamEvents) {
+          return;
+        }
+
+        const stream = await getStreamEvents(threadId, threadAgentId);
+        nextStreamEvents = stream.events;
+        threadViewStateCacheRef.current.set(threadId, {
+          readThreadState: shouldReadTurns
+            ? read
+            : (existingCachedState?.readThreadState ?? null),
+          liveState: live,
+          streamEvents: nextStreamEvents,
+        });
+        if (selectedThreadIdRef.current !== threadId) {
+          return;
+        }
+        startTransition(() => {
+          setStreamEvents((prev) => {
+            const prevLast = prev[prev.length - 1];
+            const nextLast = stream.events[stream.events.length - 1];
+            const prevLastSignature = prevLast ? JSON.stringify(prevLast) : "";
+            const nextLastSignature = nextLast ? JSON.stringify(nextLast) : "";
+            if (
+              prev.length === stream.events.length &&
+              prevLastSignature === nextLastSignature
+            ) {
+              return prev;
+            }
+            return stream.events;
+          });
+        });
+      })().finally(() => {
+        if (loadSelectedThreadInFlightRef.current?.promise === promise) {
+          loadSelectedThreadInFlightRef.current = null;
         }
       });
 
-      threadViewStateCacheRef.current.set(threadId, {
-        readThreadState: shouldReadTurns
-          ? read
-          : (existingCachedState?.readThreadState ?? null),
-        liveState: live,
-        streamEvents: nextStreamEvents,
-      });
-
-      if (!shouldLoadStreamEvents) {
-        return;
-      }
-
-      const stream = await getStreamEvents(threadId, threadAgentId);
-      nextStreamEvents = stream.events;
-      threadViewStateCacheRef.current.set(threadId, {
-        readThreadState: shouldReadTurns
-          ? read
-          : (existingCachedState?.readThreadState ?? null),
-        liveState: live,
-        streamEvents: nextStreamEvents,
-      });
-      if (selectedThreadIdRef.current !== threadId) {
-        return;
-      }
-      startTransition(() => {
-        setStreamEvents((prev) => {
-          const prevLast = prev[prev.length - 1];
-          const nextLast = stream.events[stream.events.length - 1];
-          const prevLastSignature = prevLast ? JSON.stringify(prevLast) : "";
-          const nextLastSignature = nextLast ? JSON.stringify(nextLast) : "";
-          if (
-            prev.length === stream.events.length &&
-            prevLastSignature === nextLastSignature
-          ) {
-            return prev;
-          }
-          return stream.events;
-        });
-      });
+      loadSelectedThreadInFlightRef.current = {
+        threadId,
+        promise,
+      };
+      return promise;
     },
     [agentsById],
   );
@@ -3058,6 +3224,21 @@ export function App(): React.JSX.Element {
       selectedThreadId,
       upsertSidebarThread,
     ],
+  );
+
+  const setComposerDraft = useCallback(
+    (nextDraft: string) => {
+      setComposerDrafts((previousDrafts) => {
+        if (previousDrafts[composerDraftKey] === nextDraft) {
+          return previousDrafts;
+        }
+        return {
+          ...previousDrafts,
+          [composerDraftKey]: nextDraft,
+        };
+      });
+    },
+    [composerDraftKey],
   );
 
   const applyModeDraft = useCallback(
@@ -4454,6 +4635,7 @@ export function App(): React.JSX.Element {
 
                           <ChatComposer
                             canSend={canUseComposer}
+                            draft={composerDraft}
                             isBusy={isBusy}
                             isGenerating={isGenerating}
                             placeholder={
@@ -4461,6 +4643,7 @@ export function App(): React.JSX.Element {
                                 ? `Message ${activeAgentLabel}…`
                                 : `Message ${selectedAgentLabel}…`
                             }
+                            onDraftChange={setComposerDraft}
                             onInterrupt={runInterrupt}
                             onSend={submitMessage}
                           />
@@ -4841,6 +5024,91 @@ export function App(): React.JSX.Element {
                   {hasSavedServerTarget
                     ? "Saved server target"
                     : "Automatic server target"}
+                </div>
+
+                <div className="pt-2 border-t border-border space-y-2">
+                  <div className="space-y-1">
+                    <Label className="text-sm font-medium">Notifications</Label>
+                    <div className="text-xs text-muted-foreground">
+                      Choose which completed tasks should trigger a browser
+                      notification while this tab is still open.
+                    </div>
+                  </div>
+
+                  <RadioGroup
+                    value={completionNotificationMode}
+                    onValueChange={(value) => {
+                      const nextMode = parseCompletionNotificationMode(value);
+                      setCompletionNotificationMode(nextMode);
+                      writeCompletionNotificationMode(nextMode);
+                    }}
+                    className="space-y-2"
+                  >
+                    <label
+                      htmlFor="notifications-off"
+                      className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 cursor-pointer"
+                    >
+                      <RadioGroupItem id="notifications-off" value="off" />
+                      <div>
+                        <div className="text-sm font-medium">Off</div>
+                        <div className="text-xs text-muted-foreground">
+                          Never show completion notifications.
+                        </div>
+                      </div>
+                    </label>
+                    <label
+                      htmlFor="notifications-selected"
+                      className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 cursor-pointer"
+                    >
+                      <RadioGroupItem
+                        id="notifications-selected"
+                        value="selected"
+                      />
+                      <div>
+                        <div className="text-sm font-medium">
+                          Selected Thread Only
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Notify when the thread you are currently viewing
+                          finishes.
+                        </div>
+                      </div>
+                    </label>
+                    <label
+                      htmlFor="notifications-all"
+                      className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 cursor-pointer"
+                    >
+                      <RadioGroupItem id="notifications-all" value="all" />
+                      <div>
+                        <div className="text-sm font-medium">All Threads</div>
+                        <div className="text-xs text-muted-foreground">
+                          Notify when any running thread finishes.
+                        </div>
+                      </div>
+                    </label>
+                  </RadioGroup>
+
+                  <div className="flex items-center justify-between gap-3 rounded-lg bg-muted/30 px-3 py-2">
+                    <div className="text-xs text-muted-foreground">
+                      Browser permission: {notificationPermission}
+                    </div>
+                    {notificationPermission === "default" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        onClick={() => {
+                          void requestNotificationPermissionIfNeeded(true).then(
+                            (permission) => {
+                              setNotificationPermission(permission);
+                            },
+                          );
+                        }}
+                      >
+                        Allow notifications
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             </motion.div>

@@ -1,26 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { ArrowUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 type ChatComposerProps = {
   canSend: boolean;
+  draft: string;
   isBusy: boolean;
   isGenerating: boolean;
   placeholder?: string;
+  onDraftChange: (nextDraft: string) => void;
   onInterrupt: () => void | Promise<void>;
   onSend: (text: string) => void | Promise<void>;
 };
 
 export function ChatComposer({
   canSend,
+  draft,
   isBusy,
   isGenerating,
   placeholder = "Message Codex…",
+  onDraftChange,
   onInterrupt,
   onSend,
 }: ChatComposerProps): React.JSX.Element {
-  const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const previousHeightRef = useRef(0);
@@ -88,12 +91,12 @@ export function ChatComposer({
     sendInFlightRef.current = true;
     try {
       await onSend(draft);
-      setDraft("");
+      onDraftChange("");
       previousHeightRef.current = 0;
     } finally {
       sendInFlightRef.current = false;
     }
-  }, [canSend, draft, isBusy, isGenerating, onInterrupt, onSend]);
+  }, [canSend, draft, isBusy, isGenerating, onDraftChange, onInterrupt, onSend]);
 
   const disableSend = isGenerating
     ? !canSend || isBusy
@@ -111,7 +114,7 @@ export function ChatComposer({
         ref={textareaRef}
         value={draft}
         onChange={(e) => {
-          setDraft(e.target.value);
+          onDraftChange(e.target.value);
           resizeTextarea();
         }}
         onKeyDown={(e) => {

@@ -70,6 +70,17 @@ vi.stubGlobal(
   })),
 );
 
+const notificationRequestPermission = vi.fn(async () => "granted" as const);
+const notificationConstructor = vi.fn();
+
+vi.stubGlobal(
+  "Notification",
+  Object.assign(notificationConstructor, {
+    permission: "granted" as NotificationPermission,
+    requestPermission: notificationRequestPermission,
+  }),
+);
+
 const localStorageBacking = new Map<string, string>();
 vi.stubGlobal("localStorage", {
   getItem: vi.fn((key: string): string | null => {
@@ -422,6 +433,11 @@ beforeEach(() => {
   MockEventSource.reset();
   window.history.replaceState(null, "", "/");
   localStorageBacking.clear();
+  notificationConstructor.mockClear();
+  notificationRequestPermission.mockClear();
+  Object.assign(globalThis.Notification, {
+    permission: "granted" as NotificationPermission,
+  });
 
   featureMatrixFixture = {
     ok: true,
@@ -1263,6 +1279,71 @@ describe("App", () => {
     expect(latestObservedModel).toBe("gpt-new-codex");
   }, 15000);
 
+  it("preserves the composer draft when a thread update refreshes the view", async () => {
+    const threadId = "thread-preserve-draft";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex"),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: buildConversationStateFixture(
+        targetThreadId,
+        "gpt-old-codex",
+      ),
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    const composer = (await screen.findByPlaceholderText(
+      "Message Codex…",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "keep this draft" } });
+    expect(composer.value).toBe("keep this draft");
+
+    MockEventSource.emit({
+      kind: "threadUpdated",
+      threadId,
+      provider: "codex",
+      thread: buildConversationStateFixture(threadId, "gpt-old-codex"),
+    });
+
+    await waitFor(() => {
+      expect(
+        (screen.getByPlaceholderText("Message Codex…") as HTMLTextAreaElement)
+          .value,
+      ).toBe("keep this draft");
+    });
+  });
+
   it("uses live pending requests when live reduction fails", async () => {
     const threadId = "thread-with-request";
 
@@ -1325,6 +1406,187 @@ describe("App", () => {
     expect(screen.queryByText("Pick one option")).toBeNull();
     expect(screen.queryByText("Option A")).toBeNull();
     expect(screen.queryByText("Option B")).toBeNull();
+  });
+
+  it("shows a browser notification when a generating thread completes", async () => {
+    const threadId = "thread-complete-notify";
+    const baseThread = {
+      id: threadId,
+      provider: "codex" as const,
+      preview: "Finish the release",
+      createdAt: 1700000000,
+      updatedAt: 1700000000,
+      cwd: "/tmp/project",
+      source: "codex" as const,
+    };
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          ...baseThread,
+          isGenerating: true,
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Finish the release").length).toBeGreaterThan(0);
+    });
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          ...baseThread,
+          isGenerating: false,
+          updatedAt: 1700000100,
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    MockEventSource.emit({
+      kind: "threadUpdated",
+      threadId,
+      provider: "codex",
+      thread: buildConversationStateFixture(threadId, "gpt-5.3-codex"),
+    });
+
+    await waitFor(() => {
+      expect(notificationConstructor).toHaveBeenCalledWith(
+        "Farfield task completed",
+        expect.objectContaining({
+          body: "Finish the release",
+          tag: `thread-complete:${threadId}`,
+        }),
+      );
+    });
+  });
+
+  it("notifies for non-selected threads when notification mode is all", async () => {
+    localStorageBacking.set("farfield-completion-notification-mode", "all");
+
+    const selectedThreadId = "thread-selected";
+    const completedThreadId = "thread-background";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: selectedThreadId,
+          provider: "codex",
+          preview: "Selected thread",
+          createdAt: 1700000000,
+          updatedAt: 1700000001,
+          cwd: "/tmp/project",
+          source: "codex",
+          isGenerating: false,
+        },
+        {
+          id: completedThreadId,
+          provider: "codex",
+          preview: "Background task",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+          isGenerating: true,
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Background task").length).toBeGreaterThan(0);
+    });
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: selectedThreadId,
+          provider: "codex",
+          preview: "Selected thread",
+          createdAt: 1700000000,
+          updatedAt: 1700000001,
+          cwd: "/tmp/project",
+          source: "codex",
+          isGenerating: false,
+        },
+        {
+          id: completedThreadId,
+          provider: "codex",
+          preview: "Background task",
+          createdAt: 1700000000,
+          updatedAt: 1700000100,
+          cwd: "/tmp/project",
+          source: "codex",
+          isGenerating: false,
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    MockEventSource.emit({
+      kind: "threadUpdated",
+      threadId: completedThreadId,
+      provider: "codex",
+      thread: buildConversationStateFixture(completedThreadId, "gpt-5.3-codex"),
+    });
+
+    await waitFor(() => {
+      expect(notificationConstructor).toHaveBeenCalledWith(
+        "Farfield task completed",
+        expect.objectContaining({
+          body: "Background task",
+          tag: `thread-complete:${completedThreadId}`,
+        }),
+      );
+    });
   });
 
   it("uses live thread requests when live and read timestamps match", async () => {
