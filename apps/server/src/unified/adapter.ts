@@ -688,6 +688,13 @@ function mapThread(
   };
 }
 
+export function mapThreadConversationStateToUnifiedThread(
+  provider: UnifiedProviderId,
+  thread: ThreadConversationState,
+): UnifiedThread {
+  return mapThread(provider, thread);
+}
+
 function mapThreadRequest(
   request: ThreadConversationState["requests"][number],
 ): UnifiedThread["requests"][number] {

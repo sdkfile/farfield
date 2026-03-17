@@ -74,6 +74,7 @@ import {
   type UnifiedThreadRequestResponse,
   type UnifiedFeatureAvailability,
   type UnifiedFeatureId,
+  type UnifiedThread,
 } from "@farfield/unified-surface";
 import { useTheme } from "@/hooks/useTheme";
 import { ChatTimeline, type ChatTimelineEntry } from "@/components/ChatTimeline";
@@ -538,6 +539,94 @@ function mergeIncomingThreads(
   });
 
   return sortThreadsByRecency(merged);
+}
+
+function buildThreadPreviewFromConversationState(
+  thread: UnifiedThread,
+  previousPreview: string | null,
+): string {
+  const lastTurn = thread.turns[thread.turns.length - 1];
+  const lastItem = lastTurn?.items[lastTurn.items.length - 1];
+
+  if (lastItem?.type === "userMessage") {
+    const textParts: string[] = [];
+    for (const part of lastItem.content) {
+      if (part.type !== "text") {
+        continue;
+      }
+      const text = part.text.trim();
+      if (text.length > 0) {
+        textParts.push(text);
+      }
+    }
+    if (textParts.length > 0) {
+      return textParts.join(" ");
+    }
+  }
+
+  const normalizedTitle =
+    typeof thread.title === "string" ? thread.title.trim() : "";
+  if (normalizedTitle.length > 0) {
+    return normalizedTitle;
+  }
+
+  const normalizedPreviousPreview = previousPreview?.trim() ?? "";
+  if (normalizedPreviousPreview.length > 0) {
+    return normalizedPreviousPreview;
+  }
+
+  return "New thread";
+}
+
+function buildThreadSummaryFromConversationState(
+  thread: UnifiedThread,
+  previous: Thread | null,
+): Thread {
+  const waitingOnApproval = thread.requests.some(
+    (request) =>
+      request.method === "item/commandExecution/requestApproval" ||
+      request.method === "item/fileChange/requestApproval" ||
+      request.method === "applyPatchApproval" ||
+      request.method === "execCommandApproval",
+  );
+  const waitingOnUserInput = thread.requests.some(
+    (request) => request.method === "item/tool/requestUserInput",
+  );
+
+  return {
+    id: thread.id,
+    provider: thread.provider,
+    preview: buildThreadPreviewFromConversationState(
+      thread,
+      previous?.preview ?? null,
+    ),
+    createdAt:
+      typeof thread.createdAt === "number"
+        ? normalizeUnixTimestampSeconds(thread.createdAt)
+        : (previous?.createdAt ?? Math.floor(Date.now() / 1000)),
+    updatedAt:
+      typeof thread.updatedAt === "number"
+        ? normalizeUnixTimestampSeconds(thread.updatedAt)
+        : (previous?.updatedAt ?? Math.floor(Date.now() / 1000)),
+    ...(thread.title !== undefined
+      ? { title: thread.title }
+      : previous?.title !== undefined
+        ? { title: previous.title }
+        : {}),
+    ...(thread.cwd !== undefined
+      ? { cwd: thread.cwd }
+      : previous?.cwd !== undefined
+        ? { cwd: previous.cwd }
+        : {}),
+    ...(thread.source !== undefined
+      ? { source: thread.source }
+      : previous?.source !== undefined
+        ? { source: previous.source }
+        : {}),
+    isGenerating: isThreadGeneratingState(thread),
+    waitingOnApproval,
+    waitingOnUserInput,
+  };
 }
 
 function toErrorMessage(err: unknown): string {
@@ -2459,6 +2548,72 @@ export function App(): React.JSX.Element {
     }
   }, [loadCoreData, loadSelectedThread]);
 
+  const applyThreadUpdatedEvent = useCallback((thread: UnifiedThread) => {
+    startTransition(() => {
+      setThreads((previousThreads) => {
+        const previous = previousThreads.find(
+          (threadSummary) => threadSummary.id === thread.id,
+        ) ?? null;
+        const nextSummary = buildThreadSummaryFromConversationState(
+          thread,
+          previous,
+        );
+        const nextThreads = previous
+          ? previousThreads.map((threadSummary) =>
+              threadSummary.id === thread.id ? nextSummary : threadSummary,
+            )
+          : [...previousThreads, nextSummary];
+        const sortedThreads = sortThreadsByRecency(nextThreads);
+        const nextSignature = buildThreadsSignature(sortedThreads);
+        if (signaturesMatch(threadsSignatureRef.current, nextSignature)) {
+          return previousThreads;
+        }
+        threadsSignatureRef.current = nextSignature;
+        return sortedThreads;
+      });
+
+      const cachedState = threadViewStateCacheRef.current.get(thread.id) ?? null;
+      const nextReadThreadState: ReadThreadResponse = {
+        thread,
+      };
+      const nextLiveState: LiveStateResponse =
+        cachedState?.liveState && cachedState.liveState.threadId === thread.id
+          ? {
+              ...cachedState.liveState,
+              conversationState: thread,
+              liveStateError: null,
+            }
+          : {
+              ok: true,
+              threadId: thread.id,
+              ownerClientId: null,
+              conversationState: thread,
+              liveStateError: null,
+            };
+
+      threadViewStateCacheRef.current.set(thread.id, {
+        readThreadState: nextReadThreadState,
+        liveState: nextLiveState,
+        streamEvents: cachedState?.streamEvents ?? [],
+      });
+
+      if (selectedThreadIdRef.current === thread.id) {
+        setReadThreadState((previous) =>
+          buildReadThreadSyncSignature(previous) ===
+          buildReadThreadSyncSignature(nextReadThreadState)
+            ? previous
+            : nextReadThreadState,
+        );
+        setLiveState((previous) =>
+          buildLiveStateSyncSignature(previous) ===
+          buildLiveStateSyncSignature(nextLiveState)
+            ? previous
+            : nextLiveState,
+        );
+      }
+    });
+  }, []);
+
   const saveServerTarget = useCallback(async () => {
     try {
       setError("");
@@ -2846,12 +3001,12 @@ export function App(): React.JSX.Element {
               providerCatalogCacheRef.current.clear();
               refreshCore = true;
             } else if (parsedEvent.kind === "threadUpdated") {
-              refreshCore = true;
+              applyThreadUpdatedEvent(parsedEvent.thread);
               if (
                 selectedThreadIdRef.current &&
                 parsedEvent.threadId === selectedThreadIdRef.current
               ) {
-                refreshSelectedThread = true;
+                refreshSelectedThread = activeTabRef.current === "debug";
               }
             } else if (
               parsedEvent.kind === "userInputRequested" ||
@@ -2931,7 +3086,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pageshow", onPageShow);
       closeEvents();
     };
-  }, [unifiedEventsUrl]);
+  }, [applyThreadUpdatedEvent, unifiedEventsUrl]);
 
   useEffect(() => {
     if (!activeRequest) {

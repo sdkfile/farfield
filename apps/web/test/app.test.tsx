@@ -317,6 +317,7 @@ let readThreadResolver: (
   ok: true;
   thread: UnifiedThreadFixture;
 } | null;
+let sidebarRequestCount = 0;
 
 let liveStateResolver: (
   threadId: string,
@@ -508,6 +509,7 @@ beforeEach(() => {
 
   readThreadResolver = (_threadId: string, _provider: ProviderId | null) =>
     null;
+  sidebarRequestCount = 0;
   liveStateResolver = (threadId: string, _provider: ProviderId) => ({
     kind: "readLiveState",
     threadId,
@@ -551,6 +553,7 @@ vi.stubGlobal(
     }
 
     if (pathname === "/api/unified/sidebar") {
+      sidebarRequestCount += 1;
       return jsonResponse({
         ok: true,
         rows: threadsFixture.data,
@@ -1342,6 +1345,81 @@ describe("App", () => {
           .value,
       ).toBe("keep this draft");
     });
+  });
+
+  it("patches thread summaries from threadUpdated events without an extra sidebar reload", async () => {
+    const threadId = "thread-sidebar-patch";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "old preview",
+          title: "Old title",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+          isGenerating: true,
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex"),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: buildConversationStateFixture(
+        targetThreadId,
+        "gpt-old-codex",
+      ),
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Old title").length).toBeGreaterThan(0);
+    });
+
+    const sidebarRequestsAfterInitialLoad = sidebarRequestCount;
+
+    MockEventSource.emit({
+      kind: "threadUpdated",
+      threadId,
+      provider: "codex",
+      thread: buildConversationStateFixture(threadId, "gpt-old-codex", {
+        updatedAt: 1700000100,
+        turnItems: [
+          {
+            id: "item-1",
+            type: "userMessage",
+            content: [{ type: "text", text: "updated from event" }],
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("updated from event").length).toBeGreaterThan(0);
+    });
+
+    expect(sidebarRequestCount).toBe(sidebarRequestsAfterInitialLoad);
   });
 
   it("uses live pending requests when live reduction fails", async () => {

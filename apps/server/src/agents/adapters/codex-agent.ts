@@ -61,6 +61,11 @@ export interface CodexIpcFrameEvent {
   threadId: string | null;
 }
 
+export interface CodexThreadSnapshotEvent {
+  threadId: string;
+  snapshot: ThreadConversationState;
+}
+
 export interface CodexAgentOptions {
   appExecutable: string;
   socketPath: string;
@@ -112,6 +117,9 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly threadTitleById = new Map<string, string | null>();
   private readonly ipcFrameListeners = new Set<
     (event: CodexIpcFrameEvent) => void
+  >();
+  private readonly threadSnapshotListeners = new Set<
+    (event: CodexThreadSnapshotEvent) => void
   >();
   private lastKnownOwnerClientId: string | null = null;
 
@@ -242,6 +250,10 @@ export class CodexAgentAdapter implements AgentAdapter {
         this.streamSnapshotByThreadId.set(conversationId, snapshot);
         this.streamSnapshotOriginByThreadId.set(conversationId, "stream");
         this.setThreadTitle(conversationId, snapshot.title);
+        this.emitThreadSnapshot({
+          threadId: conversationId,
+          snapshot,
+        });
       } catch (error) {
         logger.error(
           {
@@ -261,6 +273,15 @@ export class CodexAgentAdapter implements AgentAdapter {
     this.ipcFrameListeners.add(listener);
     return () => {
       this.ipcFrameListeners.delete(listener);
+    };
+  }
+
+  public onThreadSnapshot(
+    listener: (event: CodexThreadSnapshotEvent) => void,
+  ): () => void {
+    this.threadSnapshotListeners.add(listener);
+    return () => {
+      this.threadSnapshotListeners.delete(listener);
     };
   }
 
@@ -958,6 +979,12 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private emitIpcFrame(event: CodexIpcFrameEvent): void {
     for (const listener of this.ipcFrameListeners) {
+      listener(event);
+    }
+  }
+
+  private emitThreadSnapshot(event: CodexThreadSnapshotEvent): void {
+    for (const listener of this.threadSnapshotListeners) {
       listener(event);
     }
   }

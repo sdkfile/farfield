@@ -30,6 +30,7 @@ import {
   UnifiedBackendFeatureError,
   buildUnifiedFeatureMatrix,
   createUnifiedProviderAdapters,
+  mapThreadConversationStateToUnifiedThread,
 } from "./unified/adapter.js";
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";
@@ -315,6 +316,19 @@ for (const agentId of configuredAgentIds) {
       pushHistory("ipc", event.direction, event.frame, {
         method: event.method,
         threadId: event.threadId,
+      });
+    });
+
+    codexAdapter.onThreadSnapshot((event) => {
+      threadIndex.register(event.threadId, "codex");
+      broadcastUnifiedEvent({
+        kind: "threadUpdated",
+        threadId: event.threadId,
+        provider: "codex",
+        thread: mapThreadConversationStateToUnifiedThread(
+          "codex",
+          event.snapshot,
+        ),
       });
     });
 
