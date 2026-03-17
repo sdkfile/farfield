@@ -736,7 +736,7 @@ const EFFORT_ORDER: ReadonlyArray<string> = DEFAULT_EFFORT_OPTIONS;
 const INITIAL_VISIBLE_CHAT_ITEMS = 90;
 const VISIBLE_CHAT_ITEMS_STEP = 80;
 const APP_DEFAULT_VALUE = "__app_default__";
-const ASSUMED_APP_DEFAULT_MODEL = "gpt-5.3-codex";
+const ASSUMED_APP_DEFAULT_MODEL = "gpt-5.4";
 const ASSUMED_APP_DEFAULT_EFFORT = "medium";
 const AGENT_CACHE_TTL_MS = 30_000;
 const PROVIDER_CATALOG_CACHE_TTL_MS = 20_000;
@@ -908,6 +908,23 @@ function normalizeModeSettingValue(
     return "";
   }
   return normalized;
+}
+
+function resolvePreferredAppDefaultModelId(
+  models: ModelsResponse["data"],
+): string {
+  const preferredModel =
+    models.find((entry) => entry.id === ASSUMED_APP_DEFAULT_MODEL) ?? null;
+  if (preferredModel) {
+    return preferredModel.id;
+  }
+
+  const providerDefault = models.find((entry) => entry.isDefault) ?? null;
+  if (providerDefault) {
+    return providerDefault.id;
+  }
+
+  return ASSUMED_APP_DEFAULT_MODEL;
 }
 
 function readModeSelectionFromConversationState(
@@ -1782,6 +1799,10 @@ export function App(): React.JSX.Element {
     modes,
     selectedReasoningEffort,
   ]);
+  const appDefaultModelId = useMemo(
+    () => resolvePreferredAppDefaultModelId(models),
+    [models],
+  );
   const appDefaultEffortLabel = useMemo(() => {
     const activeModeKey = selectedModeKey || defaultModeOption?.mode || "";
     const modeDefaultEffort = normalizeNullableModeValue(
@@ -1795,8 +1816,7 @@ export function App(): React.JSX.Element {
     const activeModelId =
       selectedModelId ||
       normalizeNullableModeValue(conversationState?.latestModel) ||
-      models.find((entry) => entry.isDefault)?.id ||
-      "";
+      appDefaultModelId;
     const modelDefaultEffort = normalizeNullableModeValue(
       models.find((entry) => entry.id === activeModelId)
         ?.defaultReasoningEffort ?? null,
@@ -1810,6 +1830,7 @@ export function App(): React.JSX.Element {
     defaultModeOption?.mode,
     modes,
     models,
+    appDefaultModelId,
     selectedModeKey,
     selectedModelId,
   ]);
@@ -1838,10 +1859,9 @@ export function App(): React.JSX.Element {
       map.set(selectedModelId, selectedModelId);
     return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
   }, [conversationState?.latestModel, models, selectedModelId]);
-  const modelOptionsWithoutAssumedDefault = useMemo(
-    () =>
-      modelOptions.filter((option) => option.id !== ASSUMED_APP_DEFAULT_MODEL),
-    [modelOptions],
+  const modelOptionsWithoutAppDefault = useMemo(
+    () => modelOptions.filter((option) => option.id !== appDefaultModelId),
+    [appDefaultModelId, modelOptions],
   );
 
   const deferredConversationState = useDeferredValue(conversationState);
@@ -3333,11 +3353,17 @@ export function App(): React.JSX.Element {
 
         let threadId = selectedThreadId;
         let threadAgentId = activeThreadAgentId;
+        const effectiveModelId = selectedModelId || appDefaultModelId;
+        const effectiveModeKey =
+          selectedModeKey || defaultModeOption?.mode || "";
+        const effectiveMode =
+          modes.find((entry) => entry.mode === effectiveModeKey) ?? null;
 
         // Auto-create a thread if none is selected.
         if (!threadId) {
           const created = await createThread({
             agentId: selectedAgentId,
+            model: effectiveModelId,
           });
           threadId = created.threadId;
           threadAgentId = selectedAgentId;
@@ -3352,6 +3378,31 @@ export function App(): React.JSX.Element {
           );
           setSelectedThreadId(threadId);
           selectedThreadIdRef.current = threadId;
+        }
+
+        if (
+          effectiveMode &&
+          canSetCollaborationMode &&
+          selectedModelId.length === 0 &&
+          normalizeNullableModeValue(conversationState?.latestModel) !==
+            effectiveModelId
+        ) {
+          await setCollaborationMode({
+            provider: threadAgentId,
+            threadId,
+            ...(liveState?.ownerClientId
+              ? { ownerClientId: liveState.ownerClientId }
+              : {}),
+            collaborationMode: {
+              mode: effectiveMode.mode,
+              settings: {
+                model: effectiveModelId,
+                reasoningEffort: selectedReasoningEffort || null,
+                developerInstructions:
+                  effectiveMode.developerInstructions ?? null,
+              },
+            },
+          });
         }
 
         await sendMessage({
@@ -3371,11 +3422,19 @@ export function App(): React.JSX.Element {
     },
     [
       activeThreadAgentId,
+      appDefaultModelId,
       canSendMessageForActiveAgent,
+      canSetCollaborationMode,
+      conversationState?.latestModel,
+      defaultModeOption?.mode,
       hasResolvedSelectedThreadProvider,
       liveState?.ownerClientId,
+      modes,
       refreshAll,
       selectedAgentId,
+      selectedModeKey,
+      selectedModelId,
+      selectedReasoningEffort,
       selectedThreadId,
       upsertSidebarThread,
     ],
@@ -3429,6 +3488,7 @@ export function App(): React.JSX.Element {
       setIsModeSyncing(true);
       try {
         setError("");
+        const effectiveModelId = draft.modelId || appDefaultModelId;
         await setCollaborationMode({
           provider: activeThreadAgentId,
           threadId: selectedThreadId,
@@ -3438,7 +3498,7 @@ export function App(): React.JSX.Element {
           collaborationMode: {
             mode: mode.mode,
             settings: {
-              model: draft.modelId || null,
+              model: effectiveModelId,
               reasoningEffort: draft.reasoningEffort || null,
               developerInstructions: mode.developerInstructions ?? null,
             },
@@ -3457,6 +3517,7 @@ export function App(): React.JSX.Element {
     },
     [
       activeThreadAgentId,
+      appDefaultModelId,
       hasResolvedSelectedThreadProvider,
       isModeSyncing,
       liveState?.ownerClientId,
@@ -4862,9 +4923,9 @@ export function App(): React.JSX.Element {
                                 </SelectTrigger>
                                 <SelectContent position="popper">
                                   <SelectItem value={APP_DEFAULT_VALUE}>
-                                    {ASSUMED_APP_DEFAULT_MODEL}
+                                    {appDefaultModelId}
                                   </SelectItem>
-                                  {modelOptionsWithoutAssumedDefault.map(
+                                  {modelOptionsWithoutAppDefault.map(
                                     (option) => (
                                       <SelectItem
                                         key={option.id}

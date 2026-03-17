@@ -495,8 +495,8 @@ beforeEach(() => {
   modelsFixture = {
     codex: [
       {
-        id: "gpt-5.3-codex",
-        displayName: "gpt-5.3-codex",
+        id: "gpt-5.4",
+        displayName: "gpt-5.4",
         description: "Test model",
         defaultReasoningEffort: "medium",
         supportedReasoningEfforts: ["medium"],
@@ -590,6 +590,7 @@ vi.stubGlobal(
             kind: string;
             provider: ProviderId;
             threadId?: string;
+            model?: string;
           })
         : { kind: "unknown", provider: "codex" as const };
 
@@ -619,6 +620,24 @@ vi.stubGlobal(
           result: {
             kind: "listModels",
             data: modelsFixture[body.provider],
+          },
+        });
+      }
+
+      if (body.kind === "createThread") {
+        const threadId = "created-thread";
+        const modelId =
+          typeof body.model === "string" && body.model.length > 0
+            ? body.model
+            : "gpt-5.4";
+        return jsonResponse({
+          ok: true,
+          result: {
+            kind: "createThread",
+            threadId,
+            thread: buildConversationStateFixture(threadId, modelId, {
+              provider: body.provider,
+            }),
           },
         });
       }
@@ -674,6 +693,61 @@ describe("App", () => {
     render(<App />);
     expect((await screen.findAllByText("Farfield")).length).toBeGreaterThan(0);
     expect(await screen.findByText("No thread selected")).toBeTruthy();
+  });
+
+  it("uses gpt-5.4 when creating a thread from the default composer model", async () => {
+    modelsFixture = {
+      codex: [
+        {
+          id: "gpt-5.3-codex",
+          displayName: "gpt-5.3-codex",
+          description: "Older default",
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          hidden: false,
+          isDefault: true,
+        },
+        {
+          id: "gpt-5.4",
+          displayName: "gpt-5.4",
+          description: "Latest model",
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          hidden: false,
+          isDefault: false,
+        },
+      ],
+      opencode: [],
+    };
+
+    render(<App />);
+
+    const composer = (await screen.findByPlaceholderText(
+      "Message Codex…",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "ship it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    type UnifiedCommandPayload = {
+      kind?: string;
+      model?: string;
+    };
+
+    await waitFor(() => {
+      const payloads = vi
+        .mocked(fetch)
+        .mock
+        .calls
+        .filter(([input]) => String(input).includes("/api/unified/command"))
+        .map(([, init]) =>
+          JSON.parse(String(init?.body ?? "{}")) as UnifiedCommandPayload,
+        );
+
+      const createCommand =
+        payloads.find((payload) => payload.kind === "createThread") ?? null;
+
+      expect(createCommand?.model).toBe("gpt-5.4");
+    });
   });
 
   it("shows waiting indicators in the sidebar from thread summaries", async () => {
