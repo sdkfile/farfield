@@ -88,6 +88,7 @@ import { StreamEventCard } from "@/components/StreamEventCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1257,7 +1258,18 @@ function UsageRing({
 
 /* ── Main App ───────────────────────────────────────────────── */
 export function App(): React.JSX.Element {
-  const { theme, toggle: toggleTheme } = useTheme();
+  const {
+    theme,
+    toggle: toggleTheme,
+    setMode: setThemeMode,
+    themePresetId,
+    setThemePresetId,
+    activeTheme,
+    availableThemes,
+    customThemes,
+    addCustomThemeFromJson,
+    removeCustomTheme,
+  } = useTheme();
   const initialUiState = useMemo(
     () => parseUiStateFromPath(window.location.pathname),
     [],
@@ -1342,6 +1354,8 @@ export function App(): React.JSX.Element {
     useState<CompletionNotificationMode>(() => readCompletionNotificationMode());
   const [notificationPermission, setNotificationPermission] =
     useState<BrowserNotificationPermission>(() => readBrowserNotificationPermission());
+  const [themeImportDraft, setThemeImportDraft] = useState("");
+  const [themeImportError, setThemeImportError] = useState("");
 
   /* UI state */
   const [activeTab, setActiveTab] = useState<"chat" | "debug">(
@@ -2664,6 +2678,17 @@ export function App(): React.JSX.Element {
       setError(toErrorMessage(e));
     }
   }, [refreshAll]);
+
+  const importThemePreset = useCallback(() => {
+    try {
+      setThemeImportError("");
+      const importedTheme = addCustomThemeFromJson(themeImportDraft);
+      setThemePresetId(importedTheme.id);
+      setThemeImportDraft("");
+    } catch (error) {
+      setThemeImportError(toErrorMessage(error));
+    }
+  }, [addCustomThemeFromJson, setThemePresetId, themeImportDraft]);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
@@ -5164,13 +5189,13 @@ export function App(): React.JSX.Element {
               exit={{ scale: 0.98, opacity: 0 }}
               transition={{ duration: 0.16 }}
               onClick={(event) => event.stopPropagation()}
-              className="w-full max-w-xl rounded-xl border border-border bg-background shadow-2xl overflow-hidden"
+              className="w-full max-w-2xl max-h-[90vh] rounded-xl border border-border bg-background shadow-2xl overflow-hidden"
             >
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <div>
                   <div className="text-sm font-semibold">Settings</div>
                   <div className="text-xs text-muted-foreground">
-                    Configure how this frontend connects to your server.
+                    Configure appearance, server connection, and browser behavior.
                   </div>
                 </div>
                 <Button
@@ -5185,7 +5210,180 @@ export function App(): React.JSX.Element {
                 </Button>
               </div>
 
-              <div className="p-4 space-y-3">
+              <div className="max-h-[calc(90vh-64px)] overflow-y-auto p-4 space-y-4">
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <Label className="text-sm font-medium">Appearance</Label>
+                    <div className="text-xs text-muted-foreground">
+                      Pick a developer-friendly preset inspired by popular shell themes,
+                      then choose light or dark mode on top.
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Mode
+                      </Label>
+                      <RadioGroup
+                        value={theme}
+                        onValueChange={(value) => {
+                          if (value === "light" || value === "dark") {
+                            setThemeMode(value);
+                          }
+                        }}
+                        className="space-y-2"
+                      >
+                        <label
+                          htmlFor="theme-mode-dark"
+                          className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 cursor-pointer"
+                        >
+                          <RadioGroupItem id="theme-mode-dark" value="dark" />
+                          <div>
+                            <div className="text-sm font-medium">Dark</div>
+                            <div className="text-xs text-muted-foreground">
+                              Terminal-like contrast for long sessions.
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          htmlFor="theme-mode-light"
+                          className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 cursor-pointer"
+                        >
+                          <RadioGroupItem id="theme-mode-light" value="light" />
+                          <div>
+                            <div className="text-sm font-medium">Light</div>
+                            <div className="text-xs text-muted-foreground">
+                              Clean paper-like view for daytime work.
+                            </div>
+                          </div>
+                        </label>
+                      </RadioGroup>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                        Preset
+                      </Label>
+                      <Select
+                        value={themePresetId}
+                        onValueChange={(value) => {
+                          setThemePresetId(value);
+                          setThemeImportError("");
+                        }}
+                      >
+                        <SelectTrigger className="h-9 w-full text-sm">
+                          <SelectValue placeholder="Choose a theme preset" />
+                        </SelectTrigger>
+                        <SelectContent position="popper">
+                          {availableThemes.map((preset) => (
+                            <SelectItem key={preset.id} value={preset.id}>
+                              {preset.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">
+                              {activeTheme.name}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {activeTheme.description}
+                            </div>
+                          </div>
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            {activeTheme.author ?? "Custom"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 rounded-lg border border-border/70 bg-muted/15 px-3 py-3">
+                    <div className="space-y-1">
+                      <Label className="text-sm font-medium">
+                        Add Third-Party Theme
+                      </Label>
+                      <div className="text-xs text-muted-foreground">
+                        Paste JSON for a theme package. It must include `id`, `name`,
+                        `description`, and full `light`/`dark` token sets.
+                      </div>
+                    </div>
+
+                    <Textarea
+                      value={themeImportDraft}
+                      onChange={(event) => {
+                        setThemeImportDraft(event.target.value);
+                        if (themeImportError.length > 0) {
+                          setThemeImportError("");
+                        }
+                      }}
+                      placeholder={`{\n  "id": "my-theme",\n  "name": "My Theme",\n  "description": "A shell-inspired palette",\n  "author": "Your Team",\n  "tokens": { "light": { ... }, "dark": { ... } }\n}`}
+                      className="min-h-[160px] font-mono text-xs"
+                    />
+
+                    {themeImportError.length > 0 && (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive">
+                        {themeImportError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={themeImportDraft.trim().length === 0}
+                        onClick={importThemePreset}
+                      >
+                        Add theme
+                      </Button>
+                    </div>
+
+                    {customThemes.length > 0 && (
+                      <div className="space-y-2 pt-1">
+                        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                          Installed custom themes
+                        </div>
+                        {customThemes.map((preset) => (
+                          <div
+                            key={preset.id}
+                            className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2"
+                          >
+                            <div>
+                              <div className="text-sm font-medium">{preset.name}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {preset.description}
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 text-xs"
+                                onClick={() => setThemePresetId(preset.id)}
+                              >
+                                Apply
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 text-xs"
+                                onClick={() => removeCustomTheme(preset.id)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="space-y-1.5">
                   <Label className="text-sm font-medium">Server</Label>
                   <div className="text-xs text-muted-foreground">
