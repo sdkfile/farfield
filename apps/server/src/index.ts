@@ -9,7 +9,9 @@ import type { IpcFrame } from "@farfield/protocol";
 import {
   UnifiedCommandSchema,
   type UnifiedEvent,
+  type UnifiedCommandResult,
   type UnifiedProviderId,
+  type UnifiedThread,
 } from "@farfield/unified-surface";
 import {
   parseBody,
@@ -25,6 +27,7 @@ import { AgentRegistry } from "./agents/registry.js";
 import { ThreadIndex } from "./agents/thread-index.js";
 import { CodexAgentAdapter } from "./agents/adapters/codex-agent.js";
 import { OpenCodeAgentAdapter } from "./agents/adapters/opencode-agent.js";
+import { resolveCodexExecutablePath as resolveConfiguredCodexExecutablePath } from "./agents/codex-executable-path.js";
 import type { AgentAdapter } from "./agents/types.js";
 import {
   UnifiedBackendFeatureError,
@@ -32,6 +35,13 @@ import {
   createUnifiedProviderAdapters,
   mapThreadConversationStateToUnifiedThread,
 } from "./unified/adapter.js";
+import {
+  DevPreviewRegistry,
+  enrichUnifiedThreadWithDevPreviews,
+  normalizeDevPreviewPrefix,
+  proxyDevPreviewRequest,
+  proxyDevPreviewUpgrade,
+} from "./dev-preview.js";
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";
 const PORT = Number(process.env["PORT"] ?? 4311);
@@ -39,6 +49,9 @@ const HISTORY_LIMIT = 2_000;
 const USER_AGENT = "farfield/0.2.2";
 const IPC_RECONNECT_DELAY_MS = 1_000;
 const SIDEBAR_PREVIEW_MAX_CHARS = 180;
+const DEV_PREVIEW_PREFIX = normalizeDevPreviewPrefix(
+  process.env["DEV_PREVIEW_PREFIX"],
+);
 
 const TRACE_DIR = path.resolve(process.cwd(), "traces");
 const DEFAULT_WORKSPACE = path.resolve(process.cwd());
@@ -75,8 +88,9 @@ interface ActiveTrace {
 }
 
 function resolveCodexExecutablePath(): string {
-  if (process.env["CODEX_CLI_PATH"]) {
-    return process.env["CODEX_CLI_PATH"];
+  const configuredPath = process.env["CODEX_CLI_PATH"];
+  if (configuredPath) {
+    return resolveConfiguredCodexExecutablePath(configuredPath);
   }
 
   const desktopPath = "/Applications/Codex.app/Contents/Resources/codex";
@@ -84,7 +98,7 @@ function resolveCodexExecutablePath(): string {
     return desktopPath;
   }
 
-  return "codex";
+  return resolveConfiguredCodexExecutablePath(undefined);
 }
 
 function resolveIpcSocketPath(): string {
@@ -244,6 +258,9 @@ const unifiedSseClients = new Set<ServerResponse>();
 const activeSockets = new Set<Socket>();
 const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
 const threadIndex = new ThreadIndex();
+const devPreviewRegistry = new DevPreviewRegistry({
+  previewPrefix: DEV_PREVIEW_PREFIX,
+});
 
 let activeTrace: ActiveTrace | null = null;
 const recentTraces: TraceSummary[] = [];
@@ -299,6 +316,34 @@ let codexAdapter: CodexAgentAdapter | null = null;
 let openCodeAdapter: OpenCodeAgentAdapter | null = null;
 const adapters: AgentAdapter[] = [];
 
+async function enrichUnifiedThread(thread: UnifiedThread): Promise<UnifiedThread> {
+  return enrichUnifiedThreadWithDevPreviews(thread, devPreviewRegistry);
+}
+
+async function enrichUnifiedCommandResult(
+  result: UnifiedCommandResult,
+): Promise<UnifiedCommandResult> {
+  switch (result.kind) {
+    case "createThread":
+    case "readThread":
+      return {
+        ...result,
+        thread: await enrichUnifiedThread(result.thread),
+      };
+
+    case "readLiveState":
+      return {
+        ...result,
+        conversationState: result.conversationState
+          ? await enrichUnifiedThread(result.conversationState)
+          : null,
+      };
+
+    default:
+      return result;
+  }
+}
+
 for (const agentId of configuredAgentIds) {
   if (agentId === "codex") {
     codexAdapter = new CodexAgentAdapter({
@@ -321,14 +366,27 @@ for (const agentId of configuredAgentIds) {
 
     codexAdapter.onThreadSnapshot((event) => {
       threadIndex.register(event.threadId, "codex");
-      broadcastUnifiedEvent({
-        kind: "threadUpdated",
-        threadId: event.threadId,
-        provider: "codex",
-        thread: mapThreadConversationStateToUnifiedThread(
+      void (async () => {
+        const mappedThread = mapThreadConversationStateToUnifiedThread(
           "codex",
           event.snapshot,
-        ),
+        );
+        const enrichedThread = await enrichUnifiedThread(mappedThread);
+        broadcastUnifiedEvent({
+          kind: "threadUpdated",
+          threadId: event.threadId,
+          provider: "codex",
+          thread: enrichedThread,
+        });
+      })().catch((error) => {
+        runtimeLastError = toErrorMessage(error);
+        logger.warn(
+          {
+            threadId: event.threadId,
+            error: runtimeLastError,
+          },
+          "dev-preview-thread-enrichment-failed",
+        );
       });
     });
 
@@ -355,6 +413,7 @@ function getRuntimeStateSnapshot(): Record<string, unknown> {
     appExecutable: codexExecutable,
     socketPath: ipcSocketPath,
     gitCommit,
+    devPreviewPrefix: DEV_PREVIEW_PREFIX,
     appReady: codexRuntimeState?.appReady ?? false,
     ipcConnected: codexRuntimeState?.ipcConnected ?? false,
     ipcInitialized: codexRuntimeState?.ipcInitialized ?? false,
@@ -514,6 +573,17 @@ const server = http.createServer(async (req, res) => {
     const pathname = url.pathname;
     const segments = pathname.split("/").filter(Boolean);
 
+    if (
+      await proxyDevPreviewRequest({
+        req,
+        res,
+        registry: devPreviewRegistry,
+        previewPrefix: DEV_PREVIEW_PREFIX,
+      })
+    ) {
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/health") {
       jsonResponse(res, 200, {
         ok: true,
@@ -572,7 +642,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        const result = await adapter.execute(command);
+        const result = await enrichUnifiedCommandResult(
+          await adapter.execute(command),
+        );
 
         if (result.kind === "listThreads") {
           for (const thread of result.data) {
@@ -888,10 +960,11 @@ const server = http.createServer(async (req, res) => {
           includeTurns,
         });
 
-        threadIndex.register(result.thread.id, result.thread.provider);
+        const enrichedThread = await enrichUnifiedThread(result.thread);
+        threadIndex.register(enrichedThread.id, enrichedThread.provider);
         jsonResponse(res, 200, {
           ok: true,
-          thread: result.thread,
+          thread: enrichedThread,
         });
       } catch (error) {
         const message = toErrorMessage(error);
@@ -1103,6 +1176,32 @@ const server = http.createServer(async (req, res) => {
       error: runtimeLastError,
     });
   }
+});
+
+server.on("upgrade", (req, socket, head) => {
+  void proxyDevPreviewUpgrade({
+    req,
+    socket,
+    head,
+    registry: devPreviewRegistry,
+    previewPrefix: DEV_PREVIEW_PREFIX,
+  })
+    .then((handled) => {
+      if (!handled) {
+        socket.destroy();
+      }
+    })
+    .catch((error) => {
+      runtimeLastError = toErrorMessage(error);
+      logger.warn(
+        {
+          error: runtimeLastError,
+          url: req.url ?? null,
+        },
+        "dev-preview-upgrade-failed",
+      );
+      socket.destroy();
+    });
 });
 
 server.on("connection", (socket) => {

@@ -101,6 +101,58 @@ bun run dev:remote -- --agents=opencode      # remote mode with OpenCode only
 
 > **Warning:** `dev:remote` exposes Farfield with no authentication. Only use on trusted networks.
 
+## Windows helpers
+
+If you are using the hosted frontend at [farfield.app](https://farfield.app) and only need the local Farfield server on Windows, this repo includes PowerShell helpers:
+
+```powershell
+bun run windows:start-server
+```
+
+This starts the backend in watch mode on `127.0.0.1:4311`, so server code changes are picked up immediately.
+It writes runtime output to `logs/farfield-server.out.log` and errors to `logs/farfield-server.err.log`.
+
+To register Farfield so it starts automatically when you log into Windows:
+
+```powershell
+bun run windows:install-startup
+```
+
+This creates a Scheduled Task named `Farfield Server` that launches the same watch-mode server at logon.
+
+By default, the Windows helper also refreshes:
+
+```powershell
+tailscale serve --https=443 http://127.0.0.1:4311
+```
+
+so your iPhone can keep connecting through your tailnet URL after each logon.
+
+To remove the startup task later:
+
+```powershell
+bun run windows:remove-startup
+```
+
+If Windows policy blocks Task Scheduler registration on your account, you can use the Startup folder helper instead:
+
+```powershell
+bun run windows:install-startup-shortcut
+```
+
+To inspect the latest Farfield startup and runtime logs:
+
+```powershell
+bun run windows:tail-log
+```
+
+You can also run the scripts directly with custom values:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-start-farfield-server.ps1 -Agents codex
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-install-startup-task.ps1 -Agents codex -BindHost 127.0.0.1 -Port 4311
+```
+
 ## Production Mode (No Extra Proxy)
 
 Build once and run in production mode with two commands:

@@ -25,7 +25,13 @@
     "sanitize:traces": "node scripts/sanitize-traces.mjs",
     "generate:codex-schema": "node scripts/generate-codex-schema.mjs",
     "generate:opencode-manifest": "node scripts/generate-opencode-manifest.mjs",
-    "screenshot:codex": "node skills/codex-window-debug/tools/codex-window-screenshot.mjs"
+    "screenshot:codex": "node skills/codex-window-debug/tools/codex-window-screenshot.mjs",
+    "windows:start-server": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-launch-farfield-server.ps1",
+    "windows:install-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-install-startup-task.ps1",
+    "windows:remove-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-remove-startup-task.ps1",
+    "windows:install-startup-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-install-startup-shortcut.ps1",
+    "windows:remove-startup-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-remove-startup-shortcut.ps1",
+    "windows:tail-log": "powershell -NoProfile -Command \"Write-Host 'stdout'; Get-Content ./logs/farfield-server.out.log -Tail 80; Write-Host ''; Write-Host 'stderr'; Get-Content ./logs/farfield-server.err.log -Tail 80\""
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

@@ -124,7 +124,7 @@ const ITEM_RENDERERS = {
 
     return (
       <ReasoningBlock
-        summary={summary.length > 0 ? summary : ["Thinking…"]}
+        summary={summary.length > 0 ? summary : ["Thinking..."]}
         text={item.text}
         isActive={isActive}
       />
@@ -483,3 +483,4 @@ export const ConversationItem = memo(
   ConversationItemComponent,
   areConversationItemPropsEqual,
 );
+

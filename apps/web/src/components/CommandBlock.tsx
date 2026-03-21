@@ -10,10 +10,14 @@ import {
   FolderOpen,
   FileText,
   FileSearch,
+  ExternalLink,
 } from "lucide-react";
 import type { UnifiedItem } from "@farfield/unified-surface";
 import { Button } from "@/components/ui/button";
-import { summarizeCommandForHeader } from "@/lib/command-action-ui";
+import {
+  isDevPreviewCommandAction,
+  summarizeCommandForHeader,
+} from "@/lib/command-action-ui";
 import { CodeSnippet } from "./CodeSnippet";
 
 type CommandItem = Extract<UnifiedItem, { type: "commandExecution" }>;
@@ -25,6 +29,7 @@ const ACTION_ICONS: Record<string, React.ElementType> = {
   read: FileSearch,
   readFile: FileSearch,
   writeFile: FileText,
+  openDevPreview: ExternalLink,
 };
 
 interface CommandBlockProps {
@@ -50,6 +55,8 @@ function CommandBlockComponent({ item, isActive }: CommandBlockProps) {
   const headerSegments = summarizeCommandForHeader(item.command, item.commandActions);
   const displayedHeaderSegments = headerSegments.slice(0, 3);
   const hiddenHeaderSegmentsCount = Math.max(headerSegments.length - 3, 0);
+  const previewActions =
+    item.commandActions?.filter(isDevPreviewCommandAction) ?? [];
 
   return (
     <div className="rounded-xl border border-border overflow-hidden text-sm">
@@ -129,6 +136,36 @@ function CommandBlockComponent({ item, isActive }: CommandBlockProps) {
                   </div>
                   <CodeSnippet code={item.command} language="bash" />
                 </div>
+                {previewActions.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Preview
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {previewActions.map((action) => (
+                        <a
+                          key={`${action.port}-${action.path}`}
+                          href={action.path}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                        >
+                          <ExternalLink size={12} />
+                          <span>{action.name}</span>
+                          <span
+                            className={
+                              action.status === "online"
+                                ? "text-success"
+                                : "text-muted-foreground"
+                            }
+                          >
+                            {action.status}
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {hasOutput ? (
                   <div>
                     <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

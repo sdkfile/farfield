@@ -586,7 +586,17 @@ const UnifiedUserInputResponseItemSchema = z
   })
   .strict();
 
-const UnifiedCommandActionSchema = z
+const UnifiedOpenDevPreviewCommandActionSchema = z
+  .object({
+    type: z.literal("openDevPreview"),
+    name: NonEmptyStringSchema,
+    path: NonEmptyStringSchema,
+    port: z.number().int().min(1).max(65535),
+    status: z.enum(["online", "offline"]),
+  })
+  .strict();
+
+const UnifiedGenericCommandActionSchema = z
   .object({
     type: NonEmptyStringSchema,
     command: z.string().optional(),
@@ -594,7 +604,17 @@ const UnifiedCommandActionSchema = z
     path: NullableStringSchema.optional(),
     query: z.string().optional()
   })
-  .strict();
+  .strict()
+  .refine((action) => action.type !== "openDevPreview", {
+    message: "Generic command action type cannot be openDevPreview",
+    path: ["type"],
+  });
+
+const UnifiedCommandActionSchema = z.union([
+  UnifiedOpenDevPreviewCommandActionSchema,
+  UnifiedGenericCommandActionSchema,
+]);
+export type UnifiedCommandAction = z.infer<typeof UnifiedCommandActionSchema>;
 
 const UnifiedCommandExecutionItemSchema = z
   .object({

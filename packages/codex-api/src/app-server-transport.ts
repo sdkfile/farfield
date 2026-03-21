@@ -31,6 +31,15 @@ export interface ChildProcessAppServerTransportOptions {
   onStderr?: (line: string) => void;
 }
 
+export function shouldUseShellForExecutablePath(executablePath: string): boolean {
+  if (process.platform !== "win32") {
+    return false;
+  }
+
+  const normalizedPath = executablePath.trim().toLowerCase();
+  return normalizedPath.endsWith(".cmd") || normalizedPath.endsWith(".bat");
+}
+
 export class ChildProcessAppServerTransport implements AppServerTransport {
   private readonly executablePath: string;
   private readonly userAgent: string;
@@ -66,6 +75,7 @@ export class ChildProcessAppServerTransport implements AppServerTransport {
         CODEX_USER_AGENT: this.userAgent,
         CODEX_CLIENT_ID: `farfield-${randomUUID()}`
       },
+      shell: shouldUseShellForExecutablePath(this.executablePath),
       stdio: ["pipe", "pipe", "pipe"]
     });
 

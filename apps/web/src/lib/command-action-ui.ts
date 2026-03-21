@@ -1,10 +1,22 @@
-export interface CommandActionForUi {
+export interface GenericCommandActionForUi {
   type: string;
   command?: string | undefined;
   name?: string | undefined;
   path?: string | null | undefined;
   query?: string | null | undefined;
 }
+
+export interface DevPreviewCommandActionForUi {
+  type: "openDevPreview";
+  name: string;
+  path: string;
+  port: number;
+  status: "online" | "offline";
+}
+
+export type CommandActionForUi =
+  | GenericCommandActionForUi
+  | DevPreviewCommandActionForUi;
 
 export type CommandActionIconKey =
   | "search"
@@ -13,6 +25,7 @@ export type CommandActionIconKey =
   | "read"
   | "readFile"
   | "writeFile"
+  | "openDevPreview"
   | "unknown";
 
 export interface CommandActionPresentation {
@@ -92,7 +105,13 @@ function shortenText(text: string, maxLength = 88): string {
   if (text.length <= maxLength) {
     return text;
   }
-  return `${text.slice(0, maxLength)}…`;
+  return `${text.slice(0, maxLength)}...`;
+}
+
+export function isDevPreviewCommandAction(
+  action: CommandActionForUi,
+): action is DevPreviewCommandActionForUi {
+  return action.type === "openDevPreview";
 }
 
 function unwrapShellWrapper(command: string): string {
@@ -551,6 +570,14 @@ function dedupeConsecutiveSegments(
 export function describeCommandAction(
   action: CommandActionForUi,
 ): CommandActionPresentation {
+  if (isDevPreviewCommandAction(action)) {
+    return {
+      iconKey: "openDevPreview",
+      text: `Preview :${String(action.port)} (${action.status})`,
+      tooltip: action.path,
+    };
+  }
+
   const actionPath = normalizeText(action.path);
   const actionQuery = normalizeText(action.query);
   const rawCommand = normalizeText(action.command);

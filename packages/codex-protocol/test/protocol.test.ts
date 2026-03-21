@@ -613,6 +613,33 @@ describe("codex-protocol schemas", () => {
     expect(parsed.turns[0]?.items[0]?.type).toBe("commandExecution");
   });
 
+  it("parses command execution item when processId is null", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-cmd-null-process",
+              type: "commandExecution",
+              command: "echo hello",
+              processId: null,
+              status: "completed"
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    const commandItem = parsed.turns[0]?.items[0];
+    expect(commandItem?.type).toBe("commandExecution");
+    if (commandItem?.type === "commandExecution") {
+      expect(commandItem.processId).toBeNull();
+    }
+  });
+
   it("parses command action with null path and query", () => {
     const parsed = parseThreadConversationState({
       id: "thread-123",
