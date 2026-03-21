@@ -23,6 +23,7 @@ import {
 } from "@farfield/unified-surface";
 import { z } from "zod";
 import type { AgentAdapter } from "../agents/types.js";
+import type { GitBackend } from "../git.js";
 
 type UnifiedCommandByKind<K extends UnifiedCommandKind> = Extract<
   UnifiedCommand,
@@ -57,6 +58,11 @@ export const FEATURE_ID_BY_COMMAND_KIND: Record<
   readLiveState: "readLiveState",
   readStreamEvents: "readStreamEvents",
   listProjectDirectories: "listProjectDirectories",
+  gitStatus: "gitStatus",
+  gitCommit: "gitCommit",
+  gitCommitAndPush: "gitCommitAndPush",
+  gitSwitchBranch: "gitSwitchBranch",
+  gitCreatePullRequest: "gitCreatePullRequest",
 };
 
 const OpenDevPreviewCommandActionSchema = z
@@ -86,6 +92,11 @@ const PROVIDER_FEATURE_SUPPORT: Record<
     readLiveState: true,
     readStreamEvents: true,
     listProjectDirectories: false,
+    gitStatus: true,
+    gitCommit: true,
+    gitCommitAndPush: true,
+    gitSwitchBranch: true,
+    gitCreatePullRequest: true,
   },
   opencode: {
     listThreads: true,
@@ -100,6 +111,11 @@ const PROVIDER_FEATURE_SUPPORT: Record<
     readLiveState: false,
     readStreamEvents: false,
     listProjectDirectories: true,
+    gitStatus: true,
+    gitCommit: true,
+    gitCommitAndPush: true,
+    gitSwitchBranch: true,
+    gitCreatePullRequest: true,
   },
 };
 
@@ -144,10 +160,14 @@ export class AgentUnifiedProviderAdapter implements UnifiedProviderAdapter {
 
   private readonly adapter: AgentAdapter;
 
-  public constructor(provider: UnifiedProviderId, adapter: AgentAdapter) {
+  public constructor(
+    provider: UnifiedProviderId,
+    adapter: AgentAdapter,
+    gitBackend: GitBackend,
+  ) {
     this.provider = provider;
     this.adapter = adapter;
-    this.handlers = createHandlerTable(provider, adapter);
+    this.handlers = createHandlerTable(provider, adapter, gitBackend);
   }
 
   public getFeatureAvailability(): Record<
@@ -193,13 +213,14 @@ export class AgentUnifiedProviderAdapter implements UnifiedProviderAdapter {
 
 export function createUnifiedProviderAdapters(
   adapters: Record<UnifiedProviderId, AgentAdapter | null>,
+  gitBackend: GitBackend,
 ): Record<UnifiedProviderId, UnifiedProviderAdapter | null> {
   return {
     codex: adapters.codex
-      ? new AgentUnifiedProviderAdapter("codex", adapters.codex)
+      ? new AgentUnifiedProviderAdapter("codex", adapters.codex, gitBackend)
       : null,
     opencode: adapters.opencode
-      ? new AgentUnifiedProviderAdapter("opencode", adapters.opencode)
+      ? new AgentUnifiedProviderAdapter("opencode", adapters.opencode, gitBackend)
       : null,
   };
 }
@@ -219,6 +240,7 @@ export function buildUnifiedFeatureMatrix(
 function createHandlerTable(
   provider: UnifiedProviderId,
   adapter: AgentAdapter,
+  gitBackend: GitBackend,
 ): UnifiedCommandHandlerTable {
   return {
     listThreads: async (command) => {
@@ -489,6 +511,71 @@ function createHandlerTable(
       return {
         kind: "listProjectDirectories",
         directories,
+      };
+    },
+
+    gitStatus: async (command) => {
+      return {
+        kind: "gitStatus",
+        status: await gitBackend.getStatus(command.cwd),
+      };
+    },
+
+    gitCommit: async (command) => {
+      const result = await gitBackend.commit(command.message, command.cwd);
+      return {
+        kind: "gitCommit",
+        commitHash: result.commitHash,
+        summary: result.summary,
+        status: result.status,
+      };
+    },
+
+    gitCommitAndPush: async (command) => {
+      const result = await gitBackend.commitAndPush(
+        command.message,
+        command.cwd,
+      );
+      return {
+        kind: "gitCommitAndPush",
+        commitHash: result.commitHash,
+        summary: result.summary,
+        pushedBranch: result.pushedBranch,
+        remoteName: result.remoteName,
+        upstreamBranch: result.upstreamBranch,
+        status: result.status,
+      };
+    },
+
+    gitSwitchBranch: async (command) => {
+      const result = await gitBackend.switchBranch(command.branch, command.cwd);
+      return {
+        kind: "gitSwitchBranch",
+        previousBranch: result.previousBranch,
+        currentBranch: result.currentBranch,
+        status: result.status,
+      };
+    },
+
+    gitCreatePullRequest: async (command) => {
+      const result = await gitBackend.createPullRequest(
+        {
+          ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.body !== undefined ? { body: command.body } : {}),
+          ...(command.baseBranch !== undefined
+            ? { baseBranch: command.baseBranch }
+            : {}),
+        },
+        command.cwd,
+      );
+      return {
+        kind: "gitCreatePullRequest",
+        number: result.number,
+        url: result.url,
+        title: result.title,
+        baseBranch: result.baseBranch,
+        headBranch: result.headBranch,
+        status: result.status,
       };
     },
   };

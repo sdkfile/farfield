@@ -35,6 +35,7 @@ import {
   createUnifiedProviderAdapters,
   mapThreadConversationStateToUnifiedThread,
 } from "./unified/adapter.js";
+import { createGitBackend, GitActionError } from "./git.js";
 import {
   DevPreviewRegistry,
   enrichUnifiedThreadWithDevPreviews,
@@ -401,10 +402,11 @@ for (const agentId of configuredAgentIds) {
 }
 
 const registry = new AgentRegistry(adapters);
+const gitBackend = createGitBackend();
 const unifiedAdapters = createUnifiedProviderAdapters({
   codex: codexAdapter,
   opencode: openCodeAdapter,
-});
+}, gitBackend);
 
 function getRuntimeStateSnapshot(): Record<string, unknown> {
   const codexRuntimeState = codexAdapter?.getRuntimeState();
@@ -678,6 +680,18 @@ const server = http.createServer(async (req, res) => {
                 featureId: error.featureId,
                 reason: error.reason,
               },
+            },
+          });
+          return;
+        }
+
+        if (error instanceof GitActionError) {
+          jsonResponse(res, 200, {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+              ...(error.details !== undefined ? { details: error.details } : {}),
             },
           });
           return;

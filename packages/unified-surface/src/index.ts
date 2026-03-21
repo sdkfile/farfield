@@ -28,8 +28,13 @@ export const UNIFIED_FEATURE_IDS = [
   "submitUserInput",
   "readLiveState",
   "readStreamEvents",
-  "listProjectDirectories"
- ] as const;
+  "listProjectDirectories",
+  "gitStatus",
+  "gitCommit",
+  "gitCommitAndPush",
+  "gitSwitchBranch",
+  "gitCreatePullRequest",
+] as const;
 
 export const UnifiedFeatureIdSchema = z.enum(UNIFIED_FEATURE_IDS);
 export type UnifiedFeatureId = z.infer<typeof UnifiedFeatureIdSchema>;
@@ -1056,6 +1061,100 @@ const UnifiedCommandListProjectDirectoriesSchema = z
   })
   .strict();
 
+const UnifiedGitFileChangeKindSchema = z.enum([
+  "unmodified",
+  "modified",
+  "added",
+  "deleted",
+  "renamed",
+  "copied",
+  "untracked",
+  "unmerged",
+]);
+export type UnifiedGitFileChangeKind = z.infer<
+  typeof UnifiedGitFileChangeKindSchema
+>;
+
+const UnifiedGitFileSchema = z
+  .object({
+    path: NonEmptyStringSchema,
+    originalPath: NullableStringSchema.optional(),
+    indexStatus: UnifiedGitFileChangeKindSchema,
+    workingTreeStatus: UnifiedGitFileChangeKindSchema,
+  })
+  .strict();
+export type UnifiedGitFile = z.infer<typeof UnifiedGitFileSchema>;
+
+export const UnifiedGitStatusSchema = z
+  .object({
+    cwd: z.string(),
+    root: z.string(),
+    branch: NullableStringSchema,
+    upstream: NullableStringSchema,
+    detached: z.boolean(),
+    ahead: NonNegativeIntSchema,
+    behind: NonNegativeIntSchema,
+    isClean: z.boolean(),
+    hasStagedChanges: z.boolean(),
+    hasUnstagedChanges: z.boolean(),
+    hasUntrackedChanges: z.boolean(),
+    stagedCount: NonNegativeIntSchema,
+    unstagedCount: NonNegativeIntSchema,
+    untrackedCount: NonNegativeIntSchema,
+    ghCliAvailable: z.boolean(),
+    ghAuthenticated: z.boolean(),
+    localBranches: z.array(NonEmptyStringSchema),
+    files: z.array(UnifiedGitFileSchema),
+  })
+  .strict();
+export type UnifiedGitStatus = z.infer<typeof UnifiedGitStatusSchema>;
+
+const UnifiedCommandGitStatusSchema = z
+  .object({
+    kind: z.literal("gitStatus"),
+    provider: UnifiedProviderIdSchema,
+    cwd: z.string().optional(),
+  })
+  .strict();
+
+const UnifiedCommandGitCommitSchema = z
+  .object({
+    kind: z.literal("gitCommit"),
+    provider: UnifiedProviderIdSchema,
+    cwd: z.string().optional(),
+    message: NonEmptyStringSchema,
+  })
+  .strict();
+
+const UnifiedCommandGitCommitAndPushSchema = z
+  .object({
+    kind: z.literal("gitCommitAndPush"),
+    provider: UnifiedProviderIdSchema,
+    cwd: z.string().optional(),
+    message: NonEmptyStringSchema,
+  })
+  .strict();
+
+const UnifiedCommandGitSwitchBranchSchema = z
+  .object({
+    kind: z.literal("gitSwitchBranch"),
+    provider: UnifiedProviderIdSchema,
+    cwd: z.string().optional(),
+    branch: NonEmptyStringSchema,
+  })
+  .strict();
+
+const UnifiedCommandGitCreatePullRequestSchema = z
+  .object({
+    kind: z.literal("gitCreatePullRequest"),
+    provider: UnifiedProviderIdSchema,
+    cwd: z.string().optional(),
+    title: z.union([NonEmptyStringSchema, z.null()]).optional(),
+    body: z.union([z.string(), z.null()]).optional(),
+    baseBranch: z.union([NonEmptyStringSchema, z.null()]).optional(),
+  })
+  .strict();
+
 export const UnifiedCommandSchema = z.discriminatedUnion("kind", [
   UnifiedCommandListThreadsSchema,
   UnifiedCommandCreateThreadSchema,
@@ -1068,7 +1167,12 @@ export const UnifiedCommandSchema = z.discriminatedUnion("kind", [
   UnifiedCommandSubmitUserInputSchema,
   UnifiedCommandReadLiveStateSchema,
   UnifiedCommandReadStreamEventsSchema,
-  UnifiedCommandListProjectDirectoriesSchema
+  UnifiedCommandListProjectDirectoriesSchema,
+  UnifiedCommandGitStatusSchema,
+  UnifiedCommandGitCommitSchema,
+  UnifiedCommandGitCommitAndPushSchema,
+  UnifiedCommandGitSwitchBranchSchema,
+  UnifiedCommandGitCreatePullRequestSchema,
 ]);
 
 export type UnifiedCommand = z.infer<typeof UnifiedCommandSchema>;
@@ -1086,7 +1190,12 @@ export const UNIFIED_COMMAND_KINDS = [
   "submitUserInput",
   "readLiveState",
   "readStreamEvents",
-  "listProjectDirectories"
+  "listProjectDirectories",
+  "gitStatus",
+  "gitCommit",
+  "gitCommitAndPush",
+  "gitSwitchBranch",
+  "gitCreatePullRequest",
 ] as const satisfies ReadonlyArray<UnifiedCommandKind>;
 
 const UnifiedCommandResultListThreadsSchema = z
@@ -1201,6 +1310,55 @@ const UnifiedCommandResultListProjectDirectoriesSchema = z
   })
   .strict();
 
+const UnifiedCommandResultGitStatusSchema = z
+  .object({
+    kind: z.literal("gitStatus"),
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const UnifiedCommandResultGitCommitSchema = z
+  .object({
+    kind: z.literal("gitCommit"),
+    commitHash: NonEmptyStringSchema,
+    summary: NonEmptyStringSchema,
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const UnifiedCommandResultGitCommitAndPushSchema = z
+  .object({
+    kind: z.literal("gitCommitAndPush"),
+    commitHash: NonEmptyStringSchema,
+    summary: NonEmptyStringSchema,
+    pushedBranch: NonEmptyStringSchema,
+    remoteName: NonEmptyStringSchema,
+    upstreamBranch: NonEmptyStringSchema,
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const UnifiedCommandResultGitSwitchBranchSchema = z
+  .object({
+    kind: z.literal("gitSwitchBranch"),
+    previousBranch: NullableStringSchema,
+    currentBranch: NullableStringSchema,
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const UnifiedCommandResultGitCreatePullRequestSchema = z
+  .object({
+    kind: z.literal("gitCreatePullRequest"),
+    number: NonNegativeIntSchema,
+    url: NonEmptyStringSchema,
+    title: NonEmptyStringSchema,
+    baseBranch: NonEmptyStringSchema,
+    headBranch: NonEmptyStringSchema,
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
 export const UnifiedCommandResultSchema = z.discriminatedUnion("kind", [
   UnifiedCommandResultListThreadsSchema,
   UnifiedCommandResultCreateThreadSchema,
@@ -1213,7 +1371,12 @@ export const UnifiedCommandResultSchema = z.discriminatedUnion("kind", [
   UnifiedCommandResultSubmitUserInputSchema,
   UnifiedCommandResultReadLiveStateSchema,
   UnifiedCommandResultReadStreamEventsSchema,
-  UnifiedCommandResultListProjectDirectoriesSchema
+  UnifiedCommandResultListProjectDirectoriesSchema,
+  UnifiedCommandResultGitStatusSchema,
+  UnifiedCommandResultGitCommitSchema,
+  UnifiedCommandResultGitCommitAndPushSchema,
+  UnifiedCommandResultGitSwitchBranchSchema,
+  UnifiedCommandResultGitCreatePullRequestSchema,
 ]);
 
 export type UnifiedCommandResult = z.infer<typeof UnifiedCommandResultSchema>;
@@ -1321,7 +1484,12 @@ const COMMAND_KIND_COVERAGE: Record<UnifiedCommandKind, true> = {
   submitUserInput: true,
   readLiveState: true,
   readStreamEvents: true,
-  listProjectDirectories: true
+  listProjectDirectories: true,
+  gitStatus: true,
+  gitCommit: true,
+  gitCommitAndPush: true,
+  gitSwitchBranch: true,
+  gitCreatePullRequest: true,
 };
 
 const COMMAND_RESULT_KIND_COVERAGE: Record<UnifiedCommandResultKind, true> = {
@@ -1336,7 +1504,12 @@ const COMMAND_RESULT_KIND_COVERAGE: Record<UnifiedCommandResultKind, true> = {
   submitUserInput: true,
   readLiveState: true,
   readStreamEvents: true,
-  listProjectDirectories: true
+  listProjectDirectories: true,
+  gitStatus: true,
+  gitCommit: true,
+  gitCommitAndPush: true,
+  gitSwitchBranch: true,
+  gitCreatePullRequest: true,
 };
 
 const ITEM_KIND_COVERAGE: Record<UnifiedItemKind, true> = {
@@ -1376,7 +1549,12 @@ const FEATURE_ID_COVERAGE: Record<UnifiedFeatureId, true> = {
   submitUserInput: true,
   readLiveState: true,
   readStreamEvents: true,
-  listProjectDirectories: true
+  listProjectDirectories: true,
+  gitStatus: true,
+  gitCommit: true,
+  gitCommitAndPush: true,
+  gitSwitchBranch: true,
+  gitCreatePullRequest: true,
 };
 
 const EVENT_KIND_COVERAGE: Record<UnifiedEventKind, true> = {

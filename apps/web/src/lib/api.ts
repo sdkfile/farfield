@@ -6,6 +6,7 @@ import {
   UnifiedCommandSchema,
   UnifiedFeatureAvailabilitySchema,
   UnifiedFeatureIdSchema,
+  UnifiedGitStatusSchema,
   UnifiedFeatureMatrixSchema,
   UnifiedModelSchema,
   UnifiedProviderIdSchema,
@@ -306,6 +307,50 @@ const ModelsResponseSchema = z
 const CollaborationModesResponseSchema = z
   .object({
     data: z.array(UnifiedCollaborationModeSchema),
+  })
+  .strict();
+
+const GitStatusResponseSchema = z
+  .object({
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const GitCommitResponseSchema = z
+  .object({
+    commitHash: z.string(),
+    summary: z.string(),
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const GitCommitAndPushResponseSchema = z
+  .object({
+    commitHash: z.string(),
+    summary: z.string(),
+    pushedBranch: z.string(),
+    remoteName: z.string(),
+    upstreamBranch: z.string(),
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const GitSwitchBranchResponseSchema = z
+  .object({
+    previousBranch: z.union([z.string(), z.null()]),
+    currentBranch: z.union([z.string(), z.null()]),
+    status: UnifiedGitStatusSchema,
+  })
+  .strict();
+
+const GitCreatePullRequestResponseSchema = z
+  .object({
+    number: z.number().int().nonnegative(),
+    url: z.string(),
+    title: z.string(),
+    baseBranch: z.string(),
+    headBranch: z.string(),
+    status: UnifiedGitStatusSchema,
   })
   .strict();
 
@@ -744,6 +789,127 @@ export async function listModels(
 
   return ModelsResponseSchema.parse({
     data: result.data,
+  });
+}
+
+export async function getGitStatus(input: {
+  provider: AgentId;
+  cwd?: string;
+}): Promise<z.infer<typeof GitStatusResponseSchema>> {
+  const result = await runUnifiedCommand({
+    kind: "gitStatus",
+    provider: input.provider,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+  });
+
+  if (result.kind !== "gitStatus") {
+    throw new Error(`Unexpected unified command result: ${result.kind}`);
+  }
+
+  return GitStatusResponseSchema.parse({
+    status: result.status,
+  });
+}
+
+export async function commitGitChanges(input: {
+  provider: AgentId;
+  message: string;
+  cwd?: string;
+}): Promise<z.infer<typeof GitCommitResponseSchema>> {
+  const result = await runUnifiedCommand({
+    kind: "gitCommit",
+    provider: input.provider,
+    message: input.message,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+  });
+
+  if (result.kind !== "gitCommit") {
+    throw new Error(`Unexpected unified command result: ${result.kind}`);
+  }
+
+  return GitCommitResponseSchema.parse({
+    commitHash: result.commitHash,
+    summary: result.summary,
+    status: result.status,
+  });
+}
+
+export async function commitAndPushGitChanges(input: {
+  provider: AgentId;
+  message: string;
+  cwd?: string;
+}): Promise<z.infer<typeof GitCommitAndPushResponseSchema>> {
+  const result = await runUnifiedCommand({
+    kind: "gitCommitAndPush",
+    provider: input.provider,
+    message: input.message,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+  });
+
+  if (result.kind !== "gitCommitAndPush") {
+    throw new Error(`Unexpected unified command result: ${result.kind}`);
+  }
+
+  return GitCommitAndPushResponseSchema.parse({
+    commitHash: result.commitHash,
+    summary: result.summary,
+    pushedBranch: result.pushedBranch,
+    remoteName: result.remoteName,
+    upstreamBranch: result.upstreamBranch,
+    status: result.status,
+  });
+}
+
+export async function switchGitBranch(input: {
+  provider: AgentId;
+  branch: string;
+  cwd?: string;
+}): Promise<z.infer<typeof GitSwitchBranchResponseSchema>> {
+  const result = await runUnifiedCommand({
+    kind: "gitSwitchBranch",
+    provider: input.provider,
+    branch: input.branch,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+  });
+
+  if (result.kind !== "gitSwitchBranch") {
+    throw new Error(`Unexpected unified command result: ${result.kind}`);
+  }
+
+  return GitSwitchBranchResponseSchema.parse({
+    previousBranch: result.previousBranch,
+    currentBranch: result.currentBranch,
+    status: result.status,
+  });
+}
+
+export async function createGitPullRequest(input: {
+  provider: AgentId;
+  cwd?: string;
+  title?: string | null;
+  body?: string | null;
+  baseBranch?: string | null;
+}): Promise<z.infer<typeof GitCreatePullRequestResponseSchema>> {
+  const result = await runUnifiedCommand({
+    kind: "gitCreatePullRequest",
+    provider: input.provider,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+    ...(input.title !== undefined ? { title: input.title } : {}),
+    ...(input.body !== undefined ? { body: input.body } : {}),
+    ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
+  });
+
+  if (result.kind !== "gitCreatePullRequest") {
+    throw new Error(`Unexpected unified command result: ${result.kind}`);
+  }
+
+  return GitCreatePullRequestResponseSchema.parse({
+    number: result.number,
+    url: result.url,
+    title: result.title,
+    baseBranch: result.baseBranch,
+    headBranch: result.headBranch,
+    status: result.status,
   });
 }
 

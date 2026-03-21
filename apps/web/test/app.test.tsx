@@ -117,6 +117,11 @@ const FEATURE_IDS: UnifiedFeatureId[] = [
   "readLiveState",
   "readStreamEvents",
   "listProjectDirectories",
+  "gitStatus",
+  "gitCommit",
+  "gitCommitAndPush",
+  "gitSwitchBranch",
+  "gitCreatePullRequest",
 ];
 
 type ProviderId = "codex" | "opencode";
@@ -129,6 +134,11 @@ type CapabilityFixture = {
   canReadLiveState: boolean;
   canReadStreamEvents: boolean;
   canListProjectDirectories: boolean;
+  canGitStatus: boolean;
+  canGitCommit: boolean;
+  canGitCommitAndPush: boolean;
+  canGitSwitchBranch: boolean;
+  canGitCreatePullRequest: boolean;
 };
 
 type FeatureSet = Record<UnifiedFeatureId, UnifiedFeatureAvailability>;
@@ -141,6 +151,11 @@ const codexCapabilities: CapabilityFixture = {
   canReadLiveState: true,
   canReadStreamEvents: true,
   canListProjectDirectories: true,
+  canGitStatus: true,
+  canGitCommit: true,
+  canGitCommitAndPush: true,
+  canGitSwitchBranch: true,
+  canGitCreatePullRequest: true,
 };
 
 const opencodeCapabilities: CapabilityFixture = {
@@ -151,6 +166,11 @@ const opencodeCapabilities: CapabilityFixture = {
   canReadLiveState: false,
   canReadStreamEvents: false,
   canListProjectDirectories: true,
+  canGitStatus: true,
+  canGitCommit: true,
+  canGitCommitAndPush: true,
+  canGitSwitchBranch: true,
+  canGitCreatePullRequest: true,
 };
 
 function buildFeatureSet(
@@ -237,6 +257,56 @@ function buildFeatureSet(
           },
     listProjectDirectories:
       enabled && connected && capabilities.canListProjectDirectories
+        ? available
+        : {
+            status: "unavailable",
+            reason:
+              enabled && connected
+                ? "unsupportedByProvider"
+                : unavailableReason.reason,
+          },
+    gitStatus:
+      enabled && connected && capabilities.canGitStatus
+        ? available
+        : {
+            status: "unavailable",
+            reason:
+              enabled && connected
+                ? "unsupportedByProvider"
+                : unavailableReason.reason,
+          },
+    gitCommit:
+      enabled && connected && capabilities.canGitCommit
+        ? available
+        : {
+            status: "unavailable",
+            reason:
+              enabled && connected
+                ? "unsupportedByProvider"
+                : unavailableReason.reason,
+          },
+    gitCommitAndPush:
+      enabled && connected && capabilities.canGitCommitAndPush
+        ? available
+        : {
+            status: "unavailable",
+            reason:
+              enabled && connected
+                ? "unsupportedByProvider"
+                : unavailableReason.reason,
+          },
+    gitSwitchBranch:
+      enabled && connected && capabilities.canGitSwitchBranch
+        ? available
+        : {
+            status: "unavailable",
+            reason:
+              enabled && connected
+                ? "unsupportedByProvider"
+                : unavailableReason.reason,
+          },
+    gitCreatePullRequest:
+      enabled && connected && capabilities.canGitCreatePullRequest
         ? available
         : {
             status: "unavailable",
@@ -661,6 +731,69 @@ vi.stubGlobal(
         });
       }
 
+      if (body.kind === "gitStatus") {
+        return jsonResponse({
+          ok: true,
+          result: {
+            kind: "gitStatus",
+            status: {
+              cwd: "/tmp/project",
+              root: "/tmp/project",
+              branch: "main",
+              upstream: "origin/main",
+              detached: false,
+              ahead: 0,
+              behind: 0,
+              isClean: true,
+              hasStagedChanges: false,
+              hasUnstagedChanges: false,
+              hasUntrackedChanges: false,
+              stagedCount: 0,
+              unstagedCount: 0,
+              untrackedCount: 0,
+              ghCliAvailable: true,
+              ghAuthenticated: true,
+              localBranches: ["main", "feature/test"],
+              files: [],
+            },
+          },
+        });
+      }
+
+      if (body.kind === "gitCreatePullRequest") {
+        return jsonResponse({
+          ok: true,
+          result: {
+            kind: "gitCreatePullRequest",
+            number: 321,
+            url: "https://github.com/example/repo/pull/321",
+            title: "test pr",
+            baseBranch: "main",
+            headBranch: "feature/test",
+            status: {
+              cwd: "/tmp/project",
+              root: "/tmp/project",
+              branch: "feature/test",
+              upstream: "origin/feature/test",
+              detached: false,
+              ahead: 0,
+              behind: 0,
+              isClean: true,
+              hasStagedChanges: false,
+              hasUnstagedChanges: false,
+              hasUntrackedChanges: false,
+              stagedCount: 0,
+              unstagedCount: 0,
+              untrackedCount: 0,
+              ghCliAvailable: true,
+              ghAuthenticated: true,
+              localBranches: ["main", "feature/test"],
+              files: [],
+            },
+          },
+        });
+      }
+
       return jsonResponse({
         ok: true,
         result: {
@@ -693,6 +826,43 @@ describe("App", () => {
     render(<App />);
     expect((await screen.findAllByText("Farfield")).length).toBeGreaterThan(0);
     expect(await screen.findByText("No thread selected")).toBeTruthy();
+  });
+
+  it("creates a pull request from the git panel", async () => {
+    render(<App />);
+
+    fireEvent.change(await screen.findByPlaceholderText("PR title (optional)"), {
+      target: { value: "Ship git panel" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Base branch (optional)"), {
+      target: { value: "main" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create PR" }));
+
+    type UnifiedCommandPayload = {
+      kind?: string;
+      title?: string | null;
+      baseBranch?: string | null;
+    };
+
+    await waitFor(() => {
+      const payloads = vi
+        .mocked(fetch)
+        .mock
+        .calls
+        .filter(([input]) => String(input).includes("/api/unified/command"))
+        .map(([, init]) =>
+          JSON.parse(String(init?.body ?? "{}")) as UnifiedCommandPayload,
+        );
+
+      const createPrCommand =
+        payloads.find((payload) => payload.kind === "gitCreatePullRequest") ??
+        null;
+
+      expect(createPrCommand).not.toBeNull();
+      expect(createPrCommand?.title).toBe("Ship git panel");
+      expect(createPrCommand?.baseBranch).toBe("main");
+    });
   });
 
   it("uses gpt-5.4 when creating a thread from the default composer model", async () => {

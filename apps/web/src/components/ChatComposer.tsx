@@ -3,6 +3,27 @@ import { ArrowUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
+const SOFT_KEYBOARD_VIEWPORT_DELTA_PX = 120;
+
+export function shouldSendOnEnterForViewport(input: {
+  hasCoarsePointer: boolean;
+  layoutViewportHeight: number;
+  visualViewportHeight: number | null;
+}): boolean {
+  if (!input.hasCoarsePointer) {
+    return true;
+  }
+
+  if (input.visualViewportHeight === null) {
+    return false;
+  }
+
+  return (
+    input.layoutViewportHeight - input.visualViewportHeight <
+    SOFT_KEYBOARD_VIEWPORT_DELTA_PX
+  );
+}
+
 type ChatComposerProps = {
   canSend: boolean;
   draft: string;
@@ -105,7 +126,12 @@ export function ChatComposer({
     if (typeof window.matchMedia !== "function") {
       return true;
     }
-    return !window.matchMedia("(pointer: coarse)").matches;
+
+    return shouldSendOnEnterForViewport({
+      hasCoarsePointer: window.matchMedia("(pointer: coarse)").matches,
+      layoutViewportHeight: window.innerHeight,
+      visualViewportHeight: window.visualViewport?.height ?? null,
+    });
   }, []);
 
   return (

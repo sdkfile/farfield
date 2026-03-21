@@ -29,7 +29,11 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   clearServerBaseUrl,
+  commitAndPushGitChanges,
+  commitGitChanges,
+  createGitPullRequest,
   createThread,
+  getGitStatus,
   getDefaultServerBaseUrl,
   getAccountRateLimits,
   getHealth,
@@ -55,6 +59,7 @@ import {
   setCollaborationMode,
   startTrace,
   stopTrace,
+  switchGitBranch,
   submitUserInput,
   setServerBaseUrl,
   type AgentId,
@@ -86,6 +91,7 @@ import { PendingPlanImplementationCard } from "@/components/PendingPlanImplement
 import { PendingRequestCard } from "@/components/PendingRequestCard";
 import { SidebarThreadWaitingIndicators } from "@/components/SidebarThreadWaitingIndicators";
 import { StreamEventCard } from "@/components/StreamEventCard";
+import { GitPanel } from "@/components/GitPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -124,6 +130,7 @@ type AgentsResponse = Awaited<ReturnType<typeof listAgents>>;
 type TraceStatus = Awaited<ReturnType<typeof getTraceStatus>>;
 type HistoryResponse = Awaited<ReturnType<typeof listDebugHistory>>;
 type HistoryDetail = Awaited<ReturnType<typeof getHistoryEntry>>;
+type GitStatusResponse = Awaited<ReturnType<typeof getGitStatus>>;
 type CreatedThread = Awaited<ReturnType<typeof createThread>>["thread"];
 type PendingRequest = ReturnType<typeof getPendingUserInputRequests>[number];
 type PendingApprovalRequest = ReturnType<typeof getPendingApprovalRequests>[number];
@@ -201,6 +208,13 @@ interface CachedThreadViewState {
   liveState: LiveStateResponse | null;
   streamEvents: StreamEventsResponse["events"];
 }
+
+type GitBusyAction =
+  | "commit"
+  | "commitAndPush"
+  | "switchBranch"
+  | "createPullRequest"
+  | null;
 
 interface AgentCacheEntry {
   value: AgentsResponse;
@@ -1331,6 +1345,13 @@ export function App(): React.JSX.Element {
   const [traceStatus, setTraceStatus] = useState<TraceStatus | null>(null);
   const [traceLabel, setTraceLabel] = useState("capture");
   const [traceNote, setTraceNote] = useState("");
+  const [gitStatus, setGitStatus] = useState<GitStatusResponse["status"] | null>(
+    null,
+  );
+  const [gitStatusLoading, setGitStatusLoading] = useState(false);
+  const [gitError, setGitError] = useState("");
+  const [gitBusyAction, setGitBusyAction] = useState<GitBusyAction>(null);
+  const [gitPullRequestUrl, setGitPullRequestUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryResponse["history"]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [historyDetail, setHistoryDetail] = useState<HistoryDetail | null>(
@@ -1773,6 +1794,21 @@ export function App(): React.JSX.Element {
     activeAgentDescriptor,
     "listCollaborationModes",
   );
+  const canReadGitStatus = canUseFeature(activeAgentDescriptor, "gitStatus");
+  const canCommitGitChanges = canUseFeature(activeAgentDescriptor, "gitCommit");
+  const canCommitAndPushGit = canUseFeature(
+    activeAgentDescriptor,
+    "gitCommitAndPush",
+  );
+  const canSwitchGitBranches = canUseFeature(
+    activeAgentDescriptor,
+    "gitSwitchBranch",
+  );
+  const canCreateGitPullRequest = canUseFeature(
+    activeAgentDescriptor,
+    "gitCreatePullRequest",
+  );
+  const gitCwd = conversationState?.cwd ?? selectedThread?.cwd;
   const canSubmitUserInputForActiveAgent = canUseFeature(
     activeAgentDescriptor,
     "submitUserInput",
@@ -2596,6 +2632,160 @@ export function App(): React.JSX.Element {
       setError(toErrorMessage(e));
     }
   }, [loadCoreData, loadSelectedThread]);
+
+  const loadGitPanelStatus = useCallback(async () => {
+    if (!canReadGitStatus) {
+      setGitStatus(null);
+      setGitError("");
+      setGitStatusLoading(false);
+      return;
+    }
+
+    if (selectedThreadId && !hasResolvedSelectedThreadProvider) {
+      setGitStatus(null);
+      setGitError("Thread provider is still loading");
+      setGitStatusLoading(false);
+      return;
+    }
+
+    try {
+      setGitStatusLoading(true);
+      setGitError("");
+      setGitPullRequestUrl(null);
+      const result = await getGitStatus({
+        provider: activeThreadAgentId,
+        ...(gitCwd ? { cwd: gitCwd } : {}),
+      });
+      setGitStatus(result.status);
+    } catch (error) {
+      setGitStatus(null);
+      setGitError(toErrorMessage(error));
+    } finally {
+      setGitStatusLoading(false);
+    }
+  }, [
+    activeThreadAgentId,
+    canReadGitStatus,
+    gitCwd,
+    hasResolvedSelectedThreadProvider,
+    selectedThreadId,
+  ]);
+
+  const runGitCommit = useCallback(
+    async (message: string) => {
+      if (!canCommitGitChanges) {
+        return;
+      }
+
+      try {
+        setGitBusyAction("commit");
+        setGitError("");
+        const result = await commitGitChanges({
+          provider: activeThreadAgentId,
+          message,
+          ...(gitCwd ? { cwd: gitCwd } : {}),
+        });
+        setGitStatus(result.status);
+        setGitPullRequestUrl(null);
+        await refreshAll();
+      } catch (error) {
+        setGitError(toErrorMessage(error));
+      } finally {
+        setGitBusyAction(null);
+      }
+    },
+    [activeThreadAgentId, canCommitGitChanges, gitCwd, refreshAll],
+  );
+
+  const runGitCommitAndPush = useCallback(
+    async (message: string) => {
+      if (!canCommitAndPushGit) {
+        return;
+      }
+
+      try {
+        setGitBusyAction("commitAndPush");
+        setGitError("");
+        const result = await commitAndPushGitChanges({
+          provider: activeThreadAgentId,
+          message,
+          ...(gitCwd ? { cwd: gitCwd } : {}),
+        });
+        setGitStatus(result.status);
+        setGitPullRequestUrl(null);
+        await refreshAll();
+      } catch (error) {
+        setGitError(toErrorMessage(error));
+      } finally {
+        setGitBusyAction(null);
+      }
+    },
+    [activeThreadAgentId, canCommitAndPushGit, gitCwd, refreshAll],
+  );
+
+  const runGitSwitchBranch = useCallback(
+    async (branch: string) => {
+      if (!canSwitchGitBranches) {
+        return;
+      }
+
+      try {
+        setGitBusyAction("switchBranch");
+        setGitError("");
+        const result = await switchGitBranch({
+          provider: activeThreadAgentId,
+          branch,
+          ...(gitCwd ? { cwd: gitCwd } : {}),
+        });
+        setGitStatus(result.status);
+        setGitPullRequestUrl(null);
+        await refreshAll();
+      } catch (error) {
+        setGitError(toErrorMessage(error));
+      } finally {
+        setGitBusyAction(null);
+      }
+    },
+    [activeThreadAgentId, canSwitchGitBranches, gitCwd, refreshAll],
+  );
+
+  const runGitCreatePullRequest = useCallback(
+    async (input: {
+      title?: string | null;
+      body?: string | null;
+      baseBranch?: string | null;
+    }) => {
+      if (!canCreateGitPullRequest) {
+        return;
+      }
+
+      try {
+        setGitBusyAction("createPullRequest");
+        setGitError("");
+        const result = await createGitPullRequest({
+          provider: activeThreadAgentId,
+          ...(gitCwd ? { cwd: gitCwd } : {}),
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.body !== undefined ? { body: input.body } : {}),
+          ...(input.baseBranch !== undefined
+            ? { baseBranch: input.baseBranch }
+            : {}),
+        });
+        setGitStatus(result.status);
+        setGitPullRequestUrl(result.url);
+        await refreshAll();
+      } catch (error) {
+        setGitError(toErrorMessage(error));
+      } finally {
+        setGitBusyAction(null);
+      }
+    },
+    [activeThreadAgentId, canCreateGitPullRequest, gitCwd, refreshAll],
+  );
+
+  useEffect(() => {
+    void loadGitPanelStatus();
+  }, [loadGitPanelStatus, selectedThread?.updatedAt]);
 
   const applyThreadUpdatedEvent = useCallback((thread: UnifiedThread) => {
     startTransition(() => {
@@ -4947,6 +5137,35 @@ export function App(): React.JSX.Element {
                             onInterrupt={runInterrupt}
                             onSend={submitMessage}
                           />
+
+                          {(canReadGitStatus ||
+                            canCommitGitChanges ||
+                            canCommitAndPushGit ||
+                            canSwitchGitBranches ||
+                            canCreateGitPullRequest) && (
+                            <GitPanel
+                              status={gitStatus}
+                              loading={gitStatusLoading}
+                              busyAction={gitBusyAction}
+                              error={gitError}
+                              pullRequestUrl={gitPullRequestUrl}
+                              onRefresh={() => {
+                                void loadGitPanelStatus();
+                              }}
+                              onCommit={(message) => {
+                                void runGitCommit(message);
+                              }}
+                              onCommitAndPush={(message) => {
+                                void runGitCommitAndPush(message);
+                              }}
+                              onSwitchBranch={(branch) => {
+                                void runGitSwitchBranch(branch);
+                              }}
+                              onCreatePullRequest={(input) => {
+                                void runGitCreatePullRequest(input);
+                              }}
+                            />
+                          )}
 
                           {/* Toolbar */}
                           <div className="flex flex-wrap items-center gap-1.5 min-w-0">

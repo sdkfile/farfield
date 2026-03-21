@@ -14,6 +14,7 @@ import {
   buildUnifiedFeatureMatrix,
 } from "../src/unified/adapter.js";
 import type { AgentAdapter, AgentCapabilities } from "../src/agents/types.js";
+import type { GitBackend } from "../src/git.js";
 
 const SAMPLE_THREAD: ThreadConversationState = {
   id: "thread-1",
@@ -42,6 +43,7 @@ const CODEx_CAPABILITIES: AgentCapabilities = {
   canSubmitUserInput: true,
   canReadLiveState: true,
   canReadStreamEvents: true,
+  canReadRateLimits: true,
 };
 
 const OPENCODE_CAPABILITIES: AgentCapabilities = {
@@ -51,7 +53,70 @@ const OPENCODE_CAPABILITIES: AgentCapabilities = {
   canSubmitUserInput: false,
   canReadLiveState: false,
   canReadStreamEvents: false,
+  canReadRateLimits: false,
 };
+
+function createGitBackend(): GitBackend {
+  return {
+    async getStatus(cwd?: string) {
+      return {
+        cwd: cwd ?? "/tmp/project",
+        root: "/tmp/project",
+        branch: "main",
+        upstream: "origin/main",
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        isClean: true,
+        hasStagedChanges: false,
+        hasUnstagedChanges: false,
+        hasUntrackedChanges: false,
+        stagedCount: 0,
+        unstagedCount: 0,
+        untrackedCount: 0,
+        localBranches: ["main", "feature/test"],
+        files: [],
+      };
+    },
+    async commit(_message: string, cwd?: string) {
+      return {
+        commitHash: "abc1234",
+        summary: "test commit",
+        status: await this.getStatus(cwd),
+      };
+    },
+    async commitAndPush(_message: string, cwd?: string) {
+      return {
+        commitHash: "abc1234",
+        summary: "test commit",
+        pushedBranch: "main",
+        remoteName: "origin",
+        upstreamBranch: "origin/main",
+        status: await this.getStatus(cwd),
+      };
+    },
+    async switchBranch(branch: string, cwd?: string) {
+      return {
+        previousBranch: "main",
+        currentBranch: branch,
+        status: {
+          ...(await this.getStatus(cwd)),
+          branch,
+        },
+      };
+    },
+    async createPullRequest(_input, cwd?: string) {
+      return {
+        number: 123,
+        url: "https://github.com/example/repo/pull/123",
+        title: "test pr",
+        baseBranch: "main",
+        headBranch: "feature/test",
+        status: await this.getStatus(cwd),
+      };
+    },
+  };
+}
 
 function createCodexAdapter(): AgentAdapter {
   return {
@@ -297,6 +362,42 @@ function createCommand(
         kind,
         provider,
       });
+    case "gitStatus":
+      return UnifiedCommandSchema.parse({
+        kind,
+        provider,
+        cwd: "/tmp/project",
+      });
+    case "gitCommit":
+      return UnifiedCommandSchema.parse({
+        kind,
+        provider,
+        cwd: "/tmp/project",
+        message: "test commit",
+      });
+    case "gitCommitAndPush":
+      return UnifiedCommandSchema.parse({
+        kind,
+        provider,
+        cwd: "/tmp/project",
+        message: "test commit",
+      });
+    case "gitSwitchBranch":
+      return UnifiedCommandSchema.parse({
+        kind,
+        provider,
+        cwd: "/tmp/project",
+        branch: "feature/test",
+      });
+    case "gitCreatePullRequest":
+      return UnifiedCommandSchema.parse({
+        kind,
+        provider,
+        cwd: "/tmp/project",
+        title: "test pr",
+        body: "test body",
+        baseBranch: "main",
+      });
   }
 }
 
@@ -305,10 +406,12 @@ describe("unified provider adapters", () => {
     const codexUnified = new AgentUnifiedProviderAdapter(
       "codex",
       createCodexAdapter(),
+      createGitBackend(),
     );
     const opencodeUnified = new AgentUnifiedProviderAdapter(
       "opencode",
       createOpenCodeAdapter(),
+      createGitBackend(),
     );
 
     expect(Object.keys(codexUnified.handlers).sort()).toEqual(
@@ -323,7 +426,7 @@ describe("unified provider adapters", () => {
     const matrix = buildUnifiedFeatureMatrix({
       codex: createCodexAdapter(),
       opencode: createOpenCodeAdapter(),
-    });
+    }, createGitBackend());
 
     expect(matrix.codex.listThreads.status).toBe("available");
     expect(matrix.opencode.listProjectDirectories.status).toBe("available");
@@ -337,15 +440,17 @@ describe("unified provider adapters", () => {
     const codexUnified = new AgentUnifiedProviderAdapter(
       "codex",
       createCodexAdapter(),
+      createGitBackend(),
     );
     const opencodeUnified = new AgentUnifiedProviderAdapter(
       "opencode",
       createOpenCodeAdapter(),
+      createGitBackend(),
     );
     const matrix = buildUnifiedFeatureMatrix({
       codex: createCodexAdapter(),
       opencode: createOpenCodeAdapter(),
-    });
+    }, createGitBackend());
 
     for (const kind of UNIFIED_COMMAND_KINDS) {
       const featureId = FEATURE_ID_BY_COMMAND_KIND[kind];
@@ -499,7 +604,11 @@ describe("unified provider adapters", () => {
     adapter.readThread = async () => ({
       thread: threadWithMixedRequests,
     });
-    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+    const unified = new AgentUnifiedProviderAdapter(
+      "codex",
+      adapter,
+      createGitBackend(),
+    );
 
     const result = await unified.execute(
       UnifiedCommandSchema.parse({
@@ -550,7 +659,11 @@ describe("unified provider adapters", () => {
       nextCursor: null,
     });
 
-    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+    const unified = new AgentUnifiedProviderAdapter(
+      "codex",
+      adapter,
+      createGitBackend(),
+    );
     const result = await unified.execute(
       UnifiedCommandSchema.parse({
         kind: "listThreads",
@@ -591,7 +704,11 @@ describe("unified provider adapters", () => {
         ],
       },
     });
-    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+    const unified = new AgentUnifiedProviderAdapter(
+      "codex",
+      adapter,
+      createGitBackend(),
+    );
 
     const result = await unified.execute(
       UnifiedCommandSchema.parse({
@@ -649,7 +766,11 @@ describe("unified provider adapters", () => {
       liveStateError: null,
     });
 
-    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+    const unified = new AgentUnifiedProviderAdapter(
+      "codex",
+      adapter,
+      createGitBackend(),
+    );
     const result = await unified.execute(
       UnifiedCommandSchema.parse({
         kind: "readLiveState",
