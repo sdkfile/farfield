@@ -1,5 +1,13 @@
 import { useMemo, useState } from "react";
-import { GitBranch, RefreshCcw, Upload, CheckCheck, Github } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  RefreshCcw,
+  Upload,
+  CheckCheck,
+  Github,
+} from "lucide-react";
 import type { UnifiedGitStatus } from "@farfield/unified-surface";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,6 +65,7 @@ export function GitPanel({
   const [pullRequestTitle, setPullRequestTitle] = useState("");
   const [pullRequestBody, setPullRequestBody] = useState("");
   const [pullRequestBaseBranch, setPullRequestBaseBranch] = useState("");
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const branchOptions = useMemo(() => {
     if (!status) {
@@ -85,7 +94,7 @@ export function GitPanel({
     <Card className="border-border/70 bg-background/90 shadow-sm">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <CardTitle className="flex items-center gap-2">
               <GitBranch size={14} />
               Git
@@ -93,21 +102,47 @@ export function GitPanel({
             <CardDescription>
               Local repository controls for the active workspace.
             </CardDescription>
+            {isCollapsed && status && (
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span className="rounded-full border border-border/60 bg-muted/20 px-2 py-0.5">
+                  {status.branch ?? "Detached HEAD"}
+                </span>
+                <span className="rounded-full border border-border/60 bg-muted/20 px-2 py-0.5">
+                  {status.isClean ? "Clean" : "Dirty"}
+                </span>
+                <span className="rounded-full border border-border/60 bg-muted/20 px-2 py-0.5">
+                  {status.stagedCount + status.unstagedCount + status.untrackedCount} changes
+                </span>
+              </div>
+            )}
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8"
-            disabled={loading || busyAction !== null}
-            onClick={onRefresh}
-          >
-            <RefreshCcw size={12} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={loading || busyAction !== null}
+              onClick={onRefresh}
+            >
+              <RefreshCcw size={12} />
+              Refresh
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              aria-label={isCollapsed ? "Expand git panel" : "Collapse git panel"}
+              onClick={() => setIsCollapsed((value) => !value)}
+            >
+              {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            </Button>
+          </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      {!isCollapsed && (
+        <CardContent className="space-y-4">
         {status ? (
           <>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -355,7 +390,8 @@ export function GitPanel({
             {error}
           </div>
         )}
-      </CardContent>
+        </CardContent>
+      )}
     </Card>
   );
 }
