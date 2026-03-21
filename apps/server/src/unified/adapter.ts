@@ -59,6 +59,16 @@ export const FEATURE_ID_BY_COMMAND_KIND: Record<
   listProjectDirectories: "listProjectDirectories",
 };
 
+const OpenDevPreviewCommandActionSchema = z
+  .object({
+    type: z.literal("openDevPreview"),
+    name: z.string().min(1),
+    path: z.string().min(1),
+    port: z.number().int().min(1).max(65535),
+    status: z.enum(["online", "offline"]),
+  })
+  .strict();
+
 const PROVIDER_FEATURE_SUPPORT: Record<
   UnifiedProviderId,
   Record<UnifiedFeatureId, boolean>
@@ -1019,15 +1029,24 @@ function mapTurnItem(
         ...(item.processId ? { processId: item.processId } : {}),
         ...(item.commandActions
           ? {
-              commandActions: item.commandActions.map((action) => ({
-                type: action.type,
-                ...(action.command !== undefined
-                  ? { command: action.command }
-                  : {}),
-                ...(action.name !== undefined ? { name: action.name } : {}),
-                ...(action.path !== undefined ? { path: action.path } : {}),
-                ...(action.query !== undefined ? { query: action.query } : {}),
-              })),
+              commandActions: item.commandActions.map((action) => {
+                const parsedAction = OpenDevPreviewCommandActionSchema.safeParse(
+                  action,
+                );
+                if (parsedAction.success && parsedAction.data.type === "openDevPreview") {
+                  return parsedAction.data;
+                }
+
+                return {
+                  type: action.type,
+                  ...(action.command !== undefined
+                    ? { command: action.command }
+                    : {}),
+                  ...(action.name !== undefined ? { name: action.name } : {}),
+                  ...(action.path !== undefined ? { path: action.path } : {}),
+                  ...(action.query !== undefined ? { query: action.query } : {}),
+                };
+              }),
             }
           : {}),
         ...(item.aggregatedOutput !== undefined

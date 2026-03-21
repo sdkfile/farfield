@@ -615,4 +615,68 @@ describe("unified provider adapters", () => {
         : null,
     ).toBe("task-123");
   });
+
+  it("preserves openDevPreview command action fields in live state", async () => {
+    const adapter = createCodexAdapter();
+    adapter.readLiveState = async () => ({
+      ownerClientId: "owner-1",
+      conversationState: {
+        ...SAMPLE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [
+              {
+                id: "item-command",
+                type: "commandExecution",
+                command: "bun run dev",
+                status: "completed",
+                commandActions: [
+                  {
+                    type: "openDevPreview",
+                    name: "Open preview (HTTP :4312)",
+                    path: "/__preview/4312/",
+                    port: 4312,
+                    status: "online",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      liveStateError: null,
+    });
+
+    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+    const result = await unified.execute(
+      UnifiedCommandSchema.parse({
+        kind: "readLiveState",
+        provider: "codex",
+        threadId: SAMPLE_THREAD.id,
+      }),
+    );
+
+    expect(result.kind).toBe("readLiveState");
+    if (result.kind !== "readLiveState") {
+      return;
+    }
+
+    const commandItem = result.conversationState?.turns[0]?.items[0];
+    expect(commandItem?.type).toBe("commandExecution");
+    if (commandItem?.type !== "commandExecution") {
+      return;
+    }
+
+    expect(commandItem.commandActions).toEqual([
+      {
+        type: "openDevPreview",
+        name: "Open preview (HTTP :4312)",
+        path: "/__preview/4312/",
+        port: 4312,
+        status: "online",
+      },
+    ]);
+  });
 });
