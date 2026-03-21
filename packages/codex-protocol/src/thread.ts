@@ -711,11 +711,14 @@ export const LegacyReviewApprovalResponseSchema = z
   })
   .strict();
 
+export const PlanImplementationRequestResponseSchema = z.object({}).strict();
+
 export const UserInputResponsePayloadSchema = z.union([
   ToolRequestUserInputResponsePayloadSchema,
   CommandExecutionRequestApprovalResponseSchema,
   FileChangeRequestApprovalResponseSchema,
-  LegacyReviewApprovalResponseSchema
+  LegacyReviewApprovalResponseSchema,
+  PlanImplementationRequestResponseSchema
 ]);
 
 export type ToolRequestUserInputResponsePayload = z.infer<
@@ -729,6 +732,9 @@ export type FileChangeRequestApprovalResponse = z.infer<
 >;
 export type LegacyReviewApprovalResponse = z.infer<
   typeof LegacyReviewApprovalResponseSchema
+>;
+export type PlanImplementationRequestResponse = z.infer<
+  typeof PlanImplementationRequestResponseSchema
 >;
 export type UserInputResponsePayload = z.infer<typeof UserInputResponsePayloadSchema>;
 

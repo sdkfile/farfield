@@ -2075,6 +2075,97 @@ describe("App", () => {
     });
   });
 
+  it("submits plan implementation requests with an empty response payload", async () => {
+    const threadId = "thread-with-plan-implementation";
+    const planRequest: UnifiedThreadFixture["requests"][number] = {
+      id: "plan-request-1",
+      method: "item/plan/requestImplementation",
+      params: {
+        threadId,
+        turnId: "turn-1",
+        planContent: "1. Ship the API\n2. Verify the UI",
+      },
+    };
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex", {
+        customRequests: [planRequest],
+      }),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: buildConversationStateFixture(
+        targetThreadId,
+        "gpt-old-codex",
+        {
+          customRequests: [planRequest],
+        },
+      ),
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Ready to apply this plan")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Plan" }));
+
+    type UnifiedCommandPayload = {
+      kind?: string;
+      ownerClientId?: string;
+      requestId?: string | number;
+      response?: Record<string, never>;
+    };
+
+    await waitFor(() => {
+      const payloads = vi
+        .mocked(fetch)
+        .mock
+        .calls
+        .filter(([input]) => String(input).includes("/api/unified/command"))
+        .map(([, init]) =>
+          JSON.parse(String(init?.body ?? "{}")) as UnifiedCommandPayload,
+        );
+
+      const submitCommand =
+        payloads.find(
+          (payload) =>
+            payload.kind === "submitUserInput" &&
+            payload.requestId === "plan-request-1",
+        ) ?? null;
+
+      expect(submitCommand).not.toBeNull();
+      expect(submitCommand?.ownerClientId).toBe("client-1");
+      expect(submitCommand?.response).toEqual({});
+    });
+  });
+
   it("uses live turn items when live reduction fails", async () => {
     const threadId = "thread-missing-commands";
     const commandItem: UnifiedItem = {

@@ -3,10 +3,10 @@ import {
   type CollaborationMode,
   parseCommandExecutionRequestApprovalResponse,
   parseFileChangeRequestApprovalResponse,
-  parseToolRequestUserInputResponsePayload,
+  parseUserInputResponsePayload,
   type CommandExecutionRequestApprovalResponse,
   type FileChangeRequestApprovalResponse,
-  type ToolRequestUserInputResponsePayload,
+  type UserInputResponsePayload,
   type UserInputRequestId,
 } from "@farfield/protocol";
 import type { DesktopIpcClient } from "./ipc-client.js";
@@ -33,7 +33,7 @@ export interface SubmitUserInputInput {
   threadId: string;
   ownerClientId: string;
   requestId: UserInputRequestId;
-  response: ToolRequestUserInputResponsePayload;
+  response: UserInputResponsePayload;
 }
 
 export interface SubmitCommandApprovalInput {
@@ -126,7 +126,7 @@ export class CodexMonitorService {
   }
 
   public async submitUserInput(input: SubmitUserInputInput): Promise<void> {
-    const payload = parseToolRequestUserInputResponsePayload(input.response);
+    const payload = parseUserInputResponsePayload(input.response);
 
     await this.ipcClient.sendRequestAndWait(
       "thread-follower-submit-user-input",

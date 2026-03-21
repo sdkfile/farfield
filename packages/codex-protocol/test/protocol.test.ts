@@ -948,6 +948,12 @@ describe("codex-protocol schemas", () => {
     });
   });
 
+  it("parses plan implementation payload", () => {
+    const parsed = parseUserInputResponsePayload({});
+
+    expect(parsed).toEqual({});
+  });
+
   it("parses collaboration mode list response", () => {
     const parsed = parseAppServerCollaborationModeListResponse({
       data: [

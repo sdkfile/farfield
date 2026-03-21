@@ -13,7 +13,6 @@ import {
   ProtocolValidationError,
   parseCommandExecutionRequestApprovalResponse,
   parseFileChangeRequestApprovalResponse,
-  parseToolRequestUserInputResponsePayload,
   parseThreadConversationState,
   parseThreadStreamStateChangedBroadcast,
   parseUserInputResponsePayload,
@@ -755,14 +754,20 @@ export class CodexAgentAdapter implements AgentAdapter {
         break;
       }
       case "item/tool/requestUserInput": {
-        const toolResponse = parseToolRequestUserInputResponsePayload(
-          parsedResponse,
-        );
         await this.service.submitUserInput({
           threadId: input.threadId,
           ownerClientId,
           requestId: input.requestId,
-          response: toolResponse,
+          response: parsedResponse,
+        });
+        break;
+      }
+      case "item/plan/requestImplementation": {
+        await this.service.submitUserInput({
+          threadId: input.threadId,
+          ownerClientId,
+          requestId: input.requestId,
+          response: parsedResponse,
         });
         break;
       }
@@ -773,7 +778,6 @@ export class CodexAgentAdapter implements AgentAdapter {
         );
       case "account/chatgptAuthTokens/refresh":
       case "item/tool/call":
-      case "item/plan/requestImplementation":
         throw new Error(
           `Unsupported pending request method ${pendingIpcRequest.method} for submitUserInput on thread ${input.threadId}`,
         );

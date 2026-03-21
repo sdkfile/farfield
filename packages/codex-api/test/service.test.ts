@@ -160,6 +160,31 @@ describe("CodexMonitorService", () => {
     );
   });
 
+  it("submits plan implementation responses with an empty payload", async () => {
+    const ipcClient = { sendRequestAndWait: vi.fn().mockResolvedValue({}) };
+    const service = new CodexMonitorService(ipcClient as never);
+
+    await service.submitUserInput({
+      threadId: "thread-1",
+      ownerClientId: "client-1",
+      requestId: "request-implementation-1",
+      response: {},
+    });
+
+    expect(ipcClient.sendRequestAndWait).toHaveBeenCalledWith(
+      "thread-follower-submit-user-input",
+      {
+        conversationId: "thread-1",
+        requestId: "request-implementation-1",
+        response: {},
+      },
+      {
+        targetClientId: "client-1",
+        version: 1,
+      },
+    );
+  });
+
   it("submits command approval decisions to the command approval IPC method", async () => {
     const ipcClient = { sendRequestAndWait: vi.fn().mockResolvedValue({}) };
     const service = new CodexMonitorService(ipcClient as never);

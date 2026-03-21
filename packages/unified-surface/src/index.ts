@@ -293,11 +293,17 @@ export type UnifiedLegacyReviewApprovalResponse = z.infer<
   typeof UnifiedLegacyReviewApprovalResponseSchema
 >;
 
+export const UnifiedPlanImplementationResponseSchema = z.object({}).strict();
+export type UnifiedPlanImplementationResponse = z.infer<
+  typeof UnifiedPlanImplementationResponseSchema
+>;
+
 export const UnifiedThreadRequestResponseSchema = z.union([
   UnifiedUserInputResponseSchema,
   UnifiedCommandExecutionApprovalResponseSchema,
   UnifiedFileChangeApprovalResponseSchema,
-  UnifiedLegacyReviewApprovalResponseSchema
+  UnifiedLegacyReviewApprovalResponseSchema,
+  UnifiedPlanImplementationResponseSchema
 ]);
 export type UnifiedThreadRequestResponse = z.infer<typeof UnifiedThreadRequestResponseSchema>;
 

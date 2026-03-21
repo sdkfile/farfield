@@ -194,4 +194,17 @@ describe("AppServerClient.submitUserInput", () => {
       decision: "accept",
     });
   });
+
+  it("responds to plan implementation requests with an empty payload", async () => {
+    const transport: AppServerTransport = {
+      request: vi.fn().mockResolvedValue({}),
+      respond: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const client = new AppServerClient(transport);
+    await client.submitUserInput("request-implementation-1", {});
+
+    expect(transport.respond).toHaveBeenCalledWith("request-implementation-1", {});
+  });
 });

@@ -82,6 +82,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { CodeSnippet } from "@/components/CodeSnippet";
 import { PendingApprovalCard } from "@/components/PendingApprovalCard";
 import { PendingInformationalRequestCard } from "@/components/PendingInformationalRequestCard";
+import { PendingPlanImplementationCard } from "@/components/PendingPlanImplementationCard";
 import { PendingRequestCard } from "@/components/PendingRequestCard";
 import { SidebarThreadWaitingIndicators } from "@/components/SidebarThreadWaitingIndicators";
 import { StreamEventCard } from "@/components/StreamEventCard";
@@ -127,6 +128,10 @@ type CreatedThread = Awaited<ReturnType<typeof createThread>>["thread"];
 type PendingRequest = ReturnType<typeof getPendingUserInputRequests>[number];
 type PendingApprovalRequest = ReturnType<typeof getPendingApprovalRequests>[number];
 type PendingThreadRequest = ReturnType<typeof getPendingThreadRequests>[number];
+type PendingPlanImplementationRequest = Extract<
+  PendingThreadRequest,
+  { method: "item/plan/requestImplementation" }
+>;
 type PendingRequestId = PendingRequest["id"];
 type Thread = SidebarThreadsResponse["rows"][number];
 type ThreadListProviderErrors = SidebarThreadsResponse["errors"];
@@ -1660,6 +1665,7 @@ export function App(): React.JSX.Element {
     () =>
       pendingThreadRequests.filter(
         (request) =>
+          request.method !== "item/plan/requestImplementation" &&
           request.method !== "item/tool/requestUserInput" &&
           request.method !== "item/commandExecution/requestApproval" &&
           request.method !== "item/fileChange/requestApproval" &&
@@ -1669,6 +1675,13 @@ export function App(): React.JSX.Element {
     [pendingThreadRequests],
   );
   const activeApprovalRequest = pendingApprovalRequests[0] ?? null;
+  const activePlanImplementationRequest = useMemo(() => {
+    const matchingRequest = pendingThreadRequests.find(
+      (request): request is PendingPlanImplementationRequest =>
+        request.method === "item/plan/requestImplementation",
+    );
+    return matchingRequest ?? null;
+  }, [pendingThreadRequests]);
   const activeInformationalRequest = pendingInformationalRequests[0] ?? null;
   const liveStateStreamError = useMemo(() => {
     const errorState = liveState?.liveStateError;
@@ -1695,9 +1708,11 @@ export function App(): React.JSX.Element {
     }
     return {
       waitingOnApproval: pendingApprovalRequests.length > 0,
-      waitingOnUserInput: pendingRequests.length > 0,
+      waitingOnUserInput:
+        pendingRequests.length > 0 || activePlanImplementationRequest !== null,
     };
   }, [
+    activePlanImplementationRequest,
     requestSourceState,
     pendingApprovalRequests.length,
     pendingRequests.length,
@@ -3625,6 +3640,42 @@ export function App(): React.JSX.Element {
     selectedThreadId,
   ]);
 
+  const applyPendingPlanImplementation = useCallback(async () => {
+    if (!selectedThreadId || !activePlanImplementationRequest) {
+      return;
+    }
+    if (!hasResolvedSelectedThreadProvider) {
+      setError("Thread provider is still loading");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      setError("");
+      await submitUserInput({
+        provider: activeThreadAgentId,
+        threadId: selectedThreadId,
+        requestId: activePlanImplementationRequest.id,
+        ...(liveState?.ownerClientId
+          ? { ownerClientId: liveState.ownerClientId }
+          : {}),
+        response: {},
+      });
+      await refreshAll();
+    } catch (e) {
+      setError(toErrorMessage(e));
+    } finally {
+      setIsBusy(false);
+    }
+  }, [
+    activePlanImplementationRequest,
+    activeThreadAgentId,
+    hasResolvedSelectedThreadProvider,
+    liveState?.ownerClientId,
+    refreshAll,
+    selectedThreadId,
+  ]);
+
   const resolvePendingApprovalRequest = useCallback(
     async (action: "approve" | "deny") => {
       if (!selectedThreadId || !activeApprovalRequest) return;
@@ -4844,6 +4895,14 @@ export function App(): React.JSX.Element {
                           onApprove={() =>
                             void resolvePendingApprovalRequest("approve")
                           }
+                        />
+                      ) : activePlanImplementationRequest &&
+                        canSubmitUserInputForActiveAgent &&
+                        hasResolvedSelectedThreadProvider ? (
+                        <PendingPlanImplementationCard
+                          planContent={activePlanImplementationRequest.params.planContent}
+                          isBusy={isBusy}
+                          onApply={() => void applyPendingPlanImplementation()}
                         />
                       ) : activeInformationalRequest ? (
                         <PendingInformationalRequestCard
